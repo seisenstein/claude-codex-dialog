@@ -72,7 +72,7 @@ function buildReviewPrompt(diff, meta, messages) {
     diffTruncated = true;
   }
 
-  let prompt = `You are a thorough code reviewer examining changes on branch "${meta.branch}" compared to "${meta.base_branch}".
+  let prompt = `You are a thorough code reviewer examining ${meta.diff_label || `changes on branch "${meta.branch}" compared to "${meta.base_branch}"`}.
 
 ## Review Focus
 ${meta.review_focus || "General code review — correctness, edge cases, error handling, naming, test coverage."}

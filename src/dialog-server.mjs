@@ -126,19 +126,25 @@ server.tool(
 
 server.tool(
   "start_code_review",
-  "Start a code review session where Codex reviews changes and discusses them with Claude. Codex automatically generates an initial review from the diff — poll with check_messages to read it.",
+  "Start a code review session where Codex reviews changes and discusses them with Claude. Codex automatically generates an initial review from the diff — poll with check_messages to read it. Supports reviewing uncommitted changes, staged changes, or branch-vs-branch diffs.",
   {
     project_path: z
       .string()
       .describe("Path to the git project directory"),
+    diff_target: z
+      .string()
+      .optional()
+      .describe(
+        "What to diff. 'uncommitted' (default) = all working tree + staged changes vs HEAD. 'staged' = only staged changes vs HEAD. 'branch' = compare branch vs base_branch. 'commit:<sha>' = review a specific commit."
+      ),
     branch: z
       .string()
       .optional()
-      .describe("Branch to review (default: current branch)"),
+      .describe("Branch to review (only used when diff_target='branch', default: current branch)"),
     base_branch: z
       .string()
       .optional()
-      .describe("Base branch to compare against (default: 'main')"),
+      .describe("Base branch to compare against (only used when diff_target='branch', default: 'main')"),
     review_focus: z
       .string()
       .optional()
@@ -150,67 +156,79 @@ server.tool(
       .optional()
       .describe("Command to invoke codex (default: 'codex')"),
   },
-  async ({ project_path, branch, base_branch, review_focus, codex_command }) => {
-    const baseBranch = base_branch || "main";
+  async ({ project_path, diff_target, branch, base_branch, review_focus, codex_command }) => {
+    const target = diff_target || "uncommitted";
+    const execOpts = { cwd: project_path, timeout: 30000, maxBuffer: 10 * 1024 * 1024 };
 
-    // Resolve the current branch if not specified
-    let headBranch = branch;
-    if (!headBranch) {
-      try {
-        headBranch = execSync("git rev-parse --abbrev-ref HEAD", {
-          cwd: project_path,
-          timeout: 10000,
-        })
-          .toString()
-          .trim();
-      } catch (err) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Error: Could not determine current branch. Is "${project_path}" a git repository?\n${err.message}`,
-            },
-          ],
-        };
-      }
-    }
-
-    // Generate the diff
-    let diff, diffStat;
+    // Resolve current branch name for metadata
+    let currentBranch;
     try {
-      diff = execSync(`git diff ${baseBranch}...${headBranch}`, {
-        cwd: project_path,
-        timeout: 30000,
-        maxBuffer: 10 * 1024 * 1024,
-      }).toString();
-
-      diffStat = execSync(`git diff --stat ${baseBranch}...${headBranch}`, {
+      currentBranch = execSync("git rev-parse --abbrev-ref HEAD", {
         cwd: project_path,
         timeout: 10000,
-      }).toString();
+      })
+        .toString()
+        .trim();
     } catch (err) {
-      // Fall back to two-dot diff if three-dot fails (e.g. no common ancestor)
-      try {
-        diff = execSync(`git diff ${baseBranch}..${headBranch}`, {
-          cwd: project_path,
-          timeout: 30000,
-          maxBuffer: 10 * 1024 * 1024,
-        }).toString();
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error: Could not determine current branch. Is "${project_path}" a git repository?\n${err.message}`,
+          },
+        ],
+      };
+    }
 
-        diffStat = execSync(`git diff --stat ${baseBranch}..${headBranch}`, {
-          cwd: project_path,
-          timeout: 10000,
-        }).toString();
-      } catch (err2) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Error generating diff between "${baseBranch}" and "${headBranch}":\n${err2.message}`,
-            },
-          ],
-        };
+    let diff, diffStat, diffLabel;
+
+    try {
+      if (target === "staged") {
+        // Only staged changes
+        diff = execSync("git diff --cached", execOpts).toString();
+        diffStat = execSync("git diff --cached --stat", { ...execOpts, timeout: 10000 }).toString();
+        diffLabel = "staged changes vs HEAD";
+      } else if (target === "uncommitted") {
+        // All working tree changes (staged + unstaged) vs HEAD
+        diff = execSync("git diff HEAD", execOpts).toString();
+        diffStat = execSync("git diff HEAD --stat", { ...execOpts, timeout: 10000 }).toString();
+        diffLabel = "uncommitted changes vs HEAD";
+
+        // If no diff against HEAD (maybe no commits yet), try plain diff
+        if (!diff.trim()) {
+          diff = execSync("git diff", execOpts).toString();
+          diffStat = execSync("git diff --stat", { ...execOpts, timeout: 10000 }).toString();
+          diffLabel = "unstaged changes";
+        }
+      } else if (target.startsWith("commit:")) {
+        const sha = target.slice("commit:".length);
+        diff = execSync(`git show ${sha} --format=`, execOpts).toString();
+        diffStat = execSync(`git show ${sha} --stat --format=`, { ...execOpts, timeout: 10000 }).toString();
+        diffLabel = `commit ${sha}`;
+      } else {
+        // Branch mode
+        const baseBranch = base_branch || "main";
+        const headBranch = branch || currentBranch;
+
+        try {
+          diff = execSync(`git diff ${baseBranch}...${headBranch}`, execOpts).toString();
+          diffStat = execSync(`git diff --stat ${baseBranch}...${headBranch}`, { ...execOpts, timeout: 10000 }).toString();
+        } catch {
+          // Fall back to two-dot diff
+          diff = execSync(`git diff ${baseBranch}..${headBranch}`, execOpts).toString();
+          diffStat = execSync(`git diff --stat ${baseBranch}..${headBranch}`, { ...execOpts, timeout: 10000 }).toString();
+        }
+        diffLabel = `${headBranch} vs ${baseBranch}`;
       }
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error generating diff (${target}):\n${err.message}`,
+          },
+        ],
+      };
     }
 
     if (!diff.trim()) {
@@ -218,7 +236,7 @@ server.tool(
         content: [
           {
             type: "text",
-            text: `No changes found between "${baseBranch}" and "${headBranch}". Nothing to review.`,
+            text: `No changes found (${diffLabel}). Nothing to review.`,
           },
         ],
       };
@@ -233,14 +251,16 @@ server.tool(
     fs.writeFileSync(path.join(sessionDir, "diff.patch"), diff);
 
     const meta = {
-      branch: headBranch,
-      base_branch: baseBranch,
+      branch: currentBranch,
+      base_branch: base_branch || "HEAD",
+      diff_target: target,
+      diff_label: diffLabel,
       diff_stat: diffStat.trim(),
       review_focus: review_focus || null,
       files_changed: diffStat
         .trim()
         .split("\n")
-        .slice(0, -1) // remove summary line
+        .slice(0, -1)
         .map((l) => l.trim().split(/\s+/)[0])
         .filter(Boolean),
     };
@@ -259,8 +279,9 @@ server.tool(
       started_at: new Date().toISOString(),
       project_path,
       codex_command: codex_command || "codex",
-      branch: headBranch,
-      base_branch: baseBranch,
+      diff_target: target,
+      diff_label: diffLabel,
+      branch: currentBranch,
       review_focus: review_focus || null,
       runner_pid: null,
     };
@@ -297,8 +318,8 @@ server.tool(
               session_id: sessionId,
               runner_pid: runner.pid,
               review_dir: sessionDir,
-              branch: headBranch,
-              base_branch: baseBranch,
+              diff_target: target,
+              diff_label: diffLabel,
               files_changed: meta.files_changed.length,
               diff_size: diff.length,
               message:
