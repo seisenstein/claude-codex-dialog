@@ -3,9 +3,8 @@ set -euo pipefail
 
 # ── Claude Codex Dialog - Uninstaller ───────────────────────────────────────
 
-CLAUDE_DIR="$HOME/.claude"
-SETTINGS_FILE="$CLAUDE_DIR/settings.json"
-COMMANDS_DIR="$CLAUDE_DIR/commands"
+CLAUDE_JSON="$HOME/.claude.json"
+COMMANDS_DIR="$HOME/.claude/commands"
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo " claude-codex-dialog uninstaller"
@@ -23,20 +22,20 @@ if [ -f "$COMMANDS_DIR/codex-review-plan.md" ]; then
     echo "  Removed /codex-review-plan ✓"
 fi
 
-# Remove MCP server from settings
-if [ -f "$SETTINGS_FILE" ] && grep -q '"codex-dialog"' "$SETTINGS_FILE" 2>/dev/null; then
+# Remove MCP server from ~/.claude.json
+if [ -f "$CLAUDE_JSON" ] && grep -q '"codex-dialog"' "$CLAUDE_JSON" 2>/dev/null; then
     node -e "
         const fs = require('fs');
-        const settings = JSON.parse(fs.readFileSync('$SETTINGS_FILE', 'utf-8'));
-        if (settings.mcpServers && settings.mcpServers['codex-dialog']) {
-            delete settings.mcpServers['codex-dialog'];
-            if (Object.keys(settings.mcpServers).length === 0) {
-                delete settings.mcpServers;
+        const config = JSON.parse(fs.readFileSync('$CLAUDE_JSON', 'utf-8'));
+        if (config.mcpServers && config.mcpServers['codex-dialog']) {
+            delete config.mcpServers['codex-dialog'];
+            if (Object.keys(config.mcpServers).length === 0) {
+                delete config.mcpServers;
             }
         }
-        fs.writeFileSync('$SETTINGS_FILE', JSON.stringify(settings, null, 2) + '\n');
+        fs.writeFileSync('$CLAUDE_JSON', JSON.stringify(config, null, 2) + '\n');
     "
-    echo "  Removed MCP server from settings ✓"
+    echo "  Removed MCP server from ~/.claude.json ✓"
 fi
 
 echo ""

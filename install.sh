@@ -7,7 +7,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CLAUDE_DIR="$HOME/.claude"
-SETTINGS_FILE="$CLAUDE_DIR/settings.json"
+CLAUDE_JSON="$HOME/.claude.json"
 COMMANDS_DIR="$CLAUDE_DIR/commands"
 SERVER_PATH="$SCRIPT_DIR/src/dialog-server.mjs"
 
@@ -62,55 +62,26 @@ echo "  /codex-review-code ✓"
 cp "$SCRIPT_DIR/.claude/commands/codex-review-plan.md" "$COMMANDS_DIR/codex-review-plan.md"
 echo "  /codex-review-plan ✓"
 
-# ── 4. Register MCP server ──────────────────────────────────────────────────
+# ── 4. Register MCP server globally ─────────────────────────────────────────
 
 echo ""
-echo "[4/4] Registering MCP server..."
+echo "[4/4] Registering MCP server globally..."
 
-mkdir -p "$CLAUDE_DIR"
-
-# Build the MCP server entry
-MCP_ENTRY=$(cat <<JSONEOF
-{
-  "command": "node",
-  "args": ["$SERVER_PATH"]
-}
-JSONEOF
-)
-
-if [ -f "$SETTINGS_FILE" ]; then
-    # Check if codex-dialog is already registered
-    if grep -q '"codex-dialog"' "$SETTINGS_FILE" 2>/dev/null; then
-        echo "  MCP server already registered, updating..."
-        # Use node to safely update the JSON
-        node -e "
-            const fs = require('fs');
-            const settings = JSON.parse(fs.readFileSync('$SETTINGS_FILE', 'utf-8'));
-            if (!settings.mcpServers) settings.mcpServers = {};
-            settings.mcpServers['codex-dialog'] = {
-                command: 'node',
-                args: ['$SERVER_PATH']
-            };
-            fs.writeFileSync('$SETTINGS_FILE', JSON.stringify(settings, null, 2) + '\n');
-        "
-    else
-        # Add mcpServers key with codex-dialog
-        node -e "
-            const fs = require('fs');
-            const settings = JSON.parse(fs.readFileSync('$SETTINGS_FILE', 'utf-8'));
-            if (!settings.mcpServers) settings.mcpServers = {};
-            settings.mcpServers['codex-dialog'] = {
-                command: 'node',
-                args: ['$SERVER_PATH']
-            };
-            fs.writeFileSync('$SETTINGS_FILE', JSON.stringify(settings, null, 2) + '\n');
-        "
-    fi
-else
-    # Create settings.json with just the MCP server
+if [ -f "$CLAUDE_JSON" ]; then
     node -e "
         const fs = require('fs');
-        const settings = {
+        const config = JSON.parse(fs.readFileSync('$CLAUDE_JSON', 'utf-8'));
+        if (!config.mcpServers) config.mcpServers = {};
+        config.mcpServers['codex-dialog'] = {
+            command: 'node',
+            args: ['$SERVER_PATH']
+        };
+        fs.writeFileSync('$CLAUDE_JSON', JSON.stringify(config, null, 2) + '\n');
+    "
+else
+    node -e "
+        const fs = require('fs');
+        const config = {
             mcpServers: {
                 'codex-dialog': {
                     command: 'node',
@@ -118,11 +89,10 @@ else
                 }
             }
         };
-        fs.mkdirSync('$CLAUDE_DIR', { recursive: true });
-        fs.writeFileSync('$SETTINGS_FILE', JSON.stringify(settings, null, 2) + '\n');
+        fs.writeFileSync('$CLAUDE_JSON', JSON.stringify(config, null, 2) + '\n');
     "
 fi
-echo "  MCP server registered ✓"
+echo "  MCP server registered in ~/.claude.json ✓"
 
 # ── Done ─────────────────────────────────────────────────────────────────────
 
@@ -132,7 +102,7 @@ echo " Installation complete!"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 echo " MCP server: $SERVER_PATH"
-echo " Settings:   $SETTINGS_FILE"
+echo " Config:     $CLAUDE_JSON"
 echo " Commands:   $COMMANDS_DIR/codex-review-{code,plan}.md"
 echo ""
 echo " Restart Claude Code to pick up the new MCP server."
