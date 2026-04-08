@@ -6,6 +6,7 @@ An MCP server that enables back-and-forth discussions between [Claude Code](http
 
 - **General Dialog** — Open-ended technical discussions between Claude and Codex about any problem
 - **Code Review** — Codex automatically reviews a git diff and discusses findings with Claude, going back and forth on fixes
+- **Code Audit** — Codex performs a comprehensive audit of existing files (not just changes) for bugs, architecture issues, correctness, security, and more
 
 ## How it works
 
@@ -24,6 +25,12 @@ An MCP server that enables back-and-forth discussions between [Claude Code](http
 5. Back and forth continues until Codex says "LGTM" or the session is ended
 6. Review findings are categorized as `[CRITICAL]`, `[SUGGESTION]`, `[QUESTION]`, or `[PRAISE]`
 
+### Code audit mode
+1. Claude reads the target files and calls `start_dialog` with the code and an audit prompt
+2. Codex performs a deep adversarial audit — architecture, correctness, edge cases, security, resource management
+3. Claude investigates findings, fixes valid issues, and pushes back on false positives
+4. Discussion continues until the audit is complete
+
 ## Prerequisites
 
 - [Node.js](https://nodejs.org/) >= 18
@@ -37,7 +44,7 @@ cd claude-codex-dialog
 npm run setup
 ```
 
-This installs dependencies, registers the MCP server in your Claude Code settings, and installs the `/codex-review-code` and `/codex-review-plan` slash commands globally.
+This installs dependencies, registers the MCP server in your Claude Code settings, and installs the `/codex-review-code`, `/codex-review-plan`, and `/codex-audit` slash commands globally.
 
 Restart Claude Code after installation to pick up the new MCP server.
 
@@ -76,7 +83,7 @@ npm run uninstall
 
 ### Slash commands
 
-After installation, two slash commands are available in Claude Code:
+After installation, three slash commands are available in Claude Code:
 
 ```
 /codex-review-code                    Review uncommitted changes
@@ -87,6 +94,10 @@ After installation, two slash commands are available in Claude Code:
 
 /codex-review-plan                    Review an auto-detected plan file
 /codex-review-plan path/to/plan.md    Review a specific plan file
+
+/codex-audit src/                     Audit all source files for bugs and issues
+/codex-audit src/auth.ts src/db.ts    Audit specific files
+/codex-audit src/api/ security        Audit with a security focus
 ```
 
 ### Natural language

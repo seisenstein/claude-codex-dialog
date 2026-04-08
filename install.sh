@@ -62,6 +62,9 @@ echo "  /codex-review-code ✓"
 cp "$SCRIPT_DIR/.claude/commands/codex-review-plan.md" "$COMMANDS_DIR/codex-review-plan.md"
 echo "  /codex-review-plan ✓"
 
+cp "$SCRIPT_DIR/.claude/commands/codex-audit.md" "$COMMANDS_DIR/codex-audit.md"
+echo "  /codex-audit ✓"
+
 # ── 4. Register MCP server globally ─────────────────────────────────────────
 
 echo ""
@@ -103,7 +106,7 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo ""
 echo " MCP server: $SERVER_PATH"
 echo " Config:     $CLAUDE_JSON"
-echo " Commands:   $COMMANDS_DIR/codex-review-{code,plan}.md"
+echo " Commands:   $COMMANDS_DIR/codex-{review-code,review-plan,audit}.md"
 echo ""
 echo " Restart Claude Code to pick up the new MCP server."
 echo ""
@@ -111,4 +114,5 @@ echo " Usage:"
 echo "   /codex-review-code          Review uncommitted code changes"
 echo "   /codex-review-code staged   Review only staged changes"
 echo "   /codex-review-plan          Review an implementation plan"
+echo "   /codex-audit src/           Audit files for bugs and design issues"
 echo ""
