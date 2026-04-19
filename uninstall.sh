@@ -22,6 +22,11 @@ if [ -f "$COMMANDS_DIR/codex-review-plan.md" ]; then
     echo "  Removed /codex-review-plan ✓"
 fi
 
+if [ -f "$COMMANDS_DIR/codex-review-spec.md" ]; then
+    rm "$COMMANDS_DIR/codex-review-spec.md"
+    echo "  Removed /codex-review-spec ✓"
+fi
+
 if [ -f "$COMMANDS_DIR/codex-audit.md" ]; then
     rm "$COMMANDS_DIR/codex-audit.md"
     echo "  Removed /codex-audit ✓"

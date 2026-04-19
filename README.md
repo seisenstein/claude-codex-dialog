@@ -6,6 +6,8 @@ An MCP server that enables back-and-forth discussions between [Claude Code](http
 
 - **General Dialog** — Open-ended technical discussions between Claude and Codex about any problem
 - **Code Review** — Codex automatically reviews a git diff and discusses findings with Claude, going back and forth on fixes
+- **Plan Review** — Codex adversarially reviews an implementation plan (the HOW) before any code is written, catching feasibility and ordering issues early
+- **Spec Review** — Codex adversarially reviews a product/feature specification (the WHAT/WHY) for gaps, ambiguity, scope creep, and untestable acceptance criteria before a plan or code gets written
 - **Code Audit** — Codex performs a comprehensive audit of existing files (not just changes) for bugs, architecture issues, correctness, security, and more
 
 ## How it works
@@ -44,7 +46,7 @@ cd claude-codex-dialog
 npm run setup
 ```
 
-This installs dependencies, registers the MCP server in your Claude Code settings, and installs the `/codex-review-code`, `/codex-review-plan`, and `/codex-audit` slash commands globally.
+This installs dependencies, registers the MCP server in your Claude Code settings, and installs the `/codex-review-code`, `/codex-review-plan`, `/codex-review-spec`, and `/codex-audit` slash commands globally.
 
 Restart Claude Code after installation to pick up the new MCP server.
 
@@ -83,7 +85,7 @@ npm run uninstall
 
 ### Slash commands
 
-After installation, three slash commands are available in Claude Code:
+After installation, four slash commands are available in Claude Code:
 
 ```
 /codex-review-code                    Review uncommitted changes
@@ -96,6 +98,10 @@ After installation, three slash commands are available in Claude Code:
 /codex-review-plan                    Review an auto-detected plan file
 /codex-review-plan path/to/plan.md    Review a specific plan file
 /codex-review-plan rounds:3           Review with a tighter 3-round budget
+
+/codex-review-spec                    Review an auto-detected spec file
+/codex-review-spec docs/specs/foo.md  Review a specific spec file
+/codex-review-spec rounds:3           Review with a tighter 3-round budget
 
 /codex-audit src/                     Audit all source files for bugs and issues
 /codex-audit src/auth.ts src/db.ts    Audit specific files
