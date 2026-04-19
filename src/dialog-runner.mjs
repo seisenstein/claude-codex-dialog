@@ -17,6 +17,8 @@ import { readConversation, appendMessage, sleep } from "./shared.mjs";
 const sessionDir = process.argv[2];
 const projectPath = process.argv[3] || process.cwd();
 const codexCommand = process.argv[4] || "codex";
+const SOFT_CAP = parseInt(process.argv[5], 10) || 5;
+const HARD_CAP = SOFT_CAP + 5;
 
 if (!sessionDir) {
   process.exit(1);
@@ -28,7 +30,7 @@ const PROCESSING_PATH = path.join(sessionDir, "codex_processing");
 const ERROR_PATH = path.join(sessionDir, "last_error.txt");
 const LOG_PATH = path.join(sessionDir, "runner.log");
 
-const MAX_TURNS = 50;
+const MAX_TURNS = HARD_CAP;
 const POLL_INTERVAL_MS = 3000;
 const CODEX_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes per invocation
 const MAX_IDLE_MS = 15 * 60 * 1000; // 15 min with no new claude msgs = exit
@@ -43,7 +45,38 @@ function log(msg) {
 
 // ── Codex prompt builder ─────────────────────────────────────────────────────
 
-function buildCodexPrompt(problem, messages) {
+function buildRoundBudgetBlock(codexTurns, softCap, hardCap) {
+  const currentRound = codexTurns + 1;
+  const remaining = Math.max(0, softCap - currentRound);
+  const pastSoft = currentRound > softCap;
+
+  let block = `## Round Budget
+
+This session has a soft budget of ${softCap} rounds. You are writing round ${currentRound} of ${softCap}. Rounds remaining after this one: ${remaining}.
+`;
+
+  if (pastSoft) {
+    block += `
+**OVERTIME:** You are past the soft budget (round ${currentRound}, soft cap ${softCap}, hard cap ${hardCap}). Continue only if the remaining issues genuinely require more back-and-forth. Otherwise wrap up with a final summary this round.
+`;
+  }
+
+  block += `
+How to use the budget well:
+
+1. **Include everything you have in this message.** Do not hold findings, concerns, or suggestions back for "next round." If your investigation surfaced ten items, include all ten here. Future rounds are for verifying fixes and genuine follow-ups — not for releasing material you already had. Drip-feeding burns rounds and risks the conversation ending before you raise important points.
+
+2. **Consolidate and order by severity.** Group related items. Lead with the highest-severity categories first. Stylistic or cosmetic points, if any, belong in a single short "Nits" section at the end — or are omitted entirely.
+
+3. **Signal over noise.** An item earns a slot only if a reasonable senior engineer would change a decision based on it. Skip style, naming, and cosmetic preferences unless they impact correctness or understanding. If nothing serious survives investigation, say so plainly — a short honest response is better than padding the list.
+
+4. **Thoroughness, not speed.** The budget is not a countdown clock. Take the time to investigate each item properly before you write. The goal is that when you DO write, your message is COMPLETE. Brevity of conversation, not brevity of message.
+`;
+
+  return block;
+}
+
+function buildCodexPrompt(problem, messages, codexTurns) {
   // Keep conversation manageable - truncate old messages but keep first + recent
   let conversationMessages = messages;
   if (messages.length > MAX_CONVERSATION_MESSAGES) {
@@ -65,6 +98,8 @@ function buildCodexPrompt(problem, messages) {
 
 Your goal is to collaboratively solve the problem by bringing your own independent analysis, ideas, and critical thinking. You and Claude are working TOGETHER - you should build on each other's ideas while also challenging weak reasoning.
 
+${buildRoundBudgetBlock(codexTurns, SOFT_CAP, HARD_CAP)}
+
 ## Problem Description
 ${problem}
 
@@ -82,7 +117,12 @@ You can read any files in this directory to understand the code.
         prompt += `\n${msg.content}\n`;
         continue;
       }
-      const speaker = msg.from === "claude" ? "Claude" : "Codex (you)";
+      const speaker =
+        msg.from === "claude"
+          ? "Claude"
+          : msg.from === "system"
+            ? "System"
+            : "Codex (you)";
       prompt += `\n### ${speaker} [message #${msg.id}]:\n${msg.content}\n`;
     }
     prompt += `\n`;
@@ -96,6 +136,7 @@ You can read any files in this directory to understand the code.
 - Propose concrete solutions: specific files, functions, line numbers, code changes.
 - If you agree with Claude's analysis, say so but ADD something new - a refinement, edge case, or next step.
 - Be direct and technical. No filler.
+- Respect the round budget above: deliver complete feedback this message; do not save material for later rounds.
 
 Respond with ONLY your message. Do NOT wrap it in any JSON or metadata.`;
 
@@ -194,7 +235,7 @@ async function main() {
   log("=== Dialog runner started ===");
   log(`Project: ${projectPath}`);
   log(`Codex command: ${codexCommand}`);
-  log(`Max turns: ${MAX_TURNS}`);
+  log(`Soft cap: ${SOFT_CAP} rounds, hard cap: ${HARD_CAP} rounds`);
   log(`Max idle: ${MAX_IDLE_MS / 1000}s`);
 
   while (codexTurns < MAX_TURNS) {
@@ -229,7 +270,7 @@ async function main() {
       } catch {}
 
       try {
-        const prompt = buildCodexPrompt(problem, messages);
+        const prompt = buildCodexPrompt(problem, messages, codexTurns);
         const response = await runCodex(prompt);
 
         if (response) {
@@ -251,8 +292,8 @@ async function main() {
           log("Too many consecutive errors, shutting down");
           appendMessage(
             sessionDir,
-            "codex",
-            `[SYSTEM] Dialog runner encountered ${MAX_CONSECUTIVE_ERRORS} consecutive errors and is shutting down. Last error: ${err.message}`
+            "system",
+            `Dialog runner encountered ${MAX_CONSECUTIVE_ERRORS} consecutive errors and is shutting down. Last error: ${err.message}`
           );
           break;
         }
@@ -269,8 +310,8 @@ async function main() {
         log(`Idle timeout reached (${(idleMs / 1000).toFixed(0)}s). Shutting down.`);
         appendMessage(
           sessionDir,
-          "codex",
-          "[SYSTEM] Dialog runner shut down due to inactivity. Start a new dialog to continue the discussion."
+          "system",
+          "Dialog runner shut down due to inactivity. Start a new dialog to continue the discussion."
         );
         break;
       }
@@ -280,11 +321,11 @@ async function main() {
   }
 
   if (codexTurns >= MAX_TURNS) {
-    log(`Max turns (${MAX_TURNS}) reached`);
+    log(`Hard cap (${HARD_CAP}) reached`);
     appendMessage(
       sessionDir,
-      "codex",
-      `[SYSTEM] Maximum dialog turns (${MAX_TURNS}) reached. Summarize findings and start a new dialog if more discussion is needed.`
+      "system",
+      `Hard round cap (${HARD_CAP}) reached — soft budget was ${SOFT_CAP}. No further Codex turns will be invoked in this session. Summarize remaining findings and start a new dialog if more discussion is needed.`
     );
   }
 

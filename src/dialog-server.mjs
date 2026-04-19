@@ -36,11 +36,30 @@ function readStat(sessionId) {
   return readStatus(resolveSessionDir(sessionId));
 }
 
+function computeBudget(status, messages) {
+  const maxRounds = status?.max_rounds ?? 5;
+  const hardCap = status?.hard_cap ?? maxRounds + 5;
+  // Only real Codex turns count toward the budget. System notices (idle
+  // shutdown, hard-cap reached, error shutdown, etc.) use from: "system"
+  // and must not inflate rounds_used past hard_cap.
+  const roundsUsed = messages.filter((m) => m.from === "codex").length;
+  const roundsRemaining = Math.max(0, maxRounds - roundsUsed);
+  const hardRoundsRemaining = Math.max(0, hardCap - roundsUsed);
+  return {
+    max_rounds: maxRounds,
+    hard_cap: hardCap,
+    rounds_used: roundsUsed,
+    rounds_remaining: roundsRemaining,
+    hard_rounds_remaining: hardRoundsRemaining,
+    past_soft_cap: roundsUsed > maxRounds,
+  };
+}
+
 // ── Dialog Tools ────────────────────────────────────────────────────────────
 
 server.tool(
   "start_dialog",
-  "Start a new discussion session with Codex CLI. Spawns a background runner that invokes codex for each turn of the conversation.",
+  "Start a new discussion session with Codex CLI. Spawns a background runner that invokes codex for each turn of the conversation. Enforces a soft round budget (default 5) with a hard cap 5 rounds past that — the budget asks Codex to deliver complete feedback each round instead of drip-feeding.",
   {
     problem_description: z
       .string()
@@ -55,11 +74,23 @@ server.tool(
       .string()
       .optional()
       .describe("Command to invoke codex (default: 'codex')"),
+    max_rounds: z
+      .number()
+      .int()
+      .min(1)
+      .max(50)
+      .optional()
+      .describe(
+        "Soft round budget (default: 5). Codex is asked to deliver all feedback within this many rounds. Hard cap = max_rounds + 5. Do not override unless the user explicitly requested a different budget."
+      ),
   },
-  async ({ problem_description, project_path, codex_command }) => {
+  async ({ problem_description, project_path, codex_command, max_rounds }) => {
     const sessionId = `dialog-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
     const sessionDir = resolveSessionDir(sessionId);
     fs.mkdirSync(sessionDir, { recursive: true });
+
+    const softCap = max_rounds || 5;
+    const hardCap = softCap + 5;
 
     // Write problem description
     fs.writeFileSync(path.join(sessionDir, "problem.md"), problem_description);
@@ -74,6 +105,8 @@ server.tool(
       started_at: new Date().toISOString(),
       project_path: project_path || process.cwd(),
       codex_command: codex_command || "codex",
+      max_rounds: softCap,
+      hard_cap: hardCap,
       runner_pid: null,
     };
     fs.writeFileSync(
@@ -85,7 +118,13 @@ server.tool(
     const runnerPath = new URL("dialog-runner.mjs", import.meta.url).pathname;
     const runner = spawn(
       "node",
-      [runnerPath, sessionDir, project_path || process.cwd(), codex_command || "codex"],
+      [
+        runnerPath,
+        sessionDir,
+        project_path || process.cwd(),
+        codex_command || "codex",
+        String(softCap),
+      ],
       {
         detached: true,
         stdio: ["ignore", "ignore", "ignore"],
@@ -110,8 +149,10 @@ server.tool(
               session_id: sessionId,
               runner_pid: runner.pid,
               dialog_dir: sessionDir,
+              max_rounds: softCap,
+              hard_cap: hardCap,
               message:
-                "Dialog started. Send your first message with send_message, then poll with check_messages.",
+                `Dialog started with a soft budget of ${softCap} rounds (hard cap ${hardCap}). Send your first message with send_message, then wait for Codex — arm a Monitor on ${sessionDir}/conversation.jsonl instead of sleep-polling check_messages.`,
             },
             null,
             2
@@ -126,7 +167,7 @@ server.tool(
 
 server.tool(
   "start_code_review",
-  "Start a code review session where Codex reviews changes and discusses them with Claude. Codex automatically generates an initial review from the diff — poll with check_messages to read it. Supports reviewing uncommitted changes, staged changes, or branch-vs-branch diffs.",
+  "Start a code review session where Codex reviews changes and discusses them with Claude. Codex automatically generates an initial review from the diff — arm a Monitor on the session's conversation.jsonl to be notified when it lands, then call check_messages to read content. Supports reviewing uncommitted changes, staged changes, or branch-vs-branch diffs. Enforces a soft round budget (default 5) with a hard cap 5 rounds past that — the budget asks Codex to deliver complete feedback each round instead of drip-feeding.",
   {
     project_path: z
       .string()
@@ -155,9 +196,20 @@ server.tool(
       .string()
       .optional()
       .describe("Command to invoke codex (default: 'codex')"),
+    max_rounds: z
+      .number()
+      .int()
+      .min(1)
+      .max(50)
+      .optional()
+      .describe(
+        "Soft round budget (default: 5). Codex is asked to deliver all feedback within this many rounds. Hard cap = max_rounds + 5. Do not override unless the user explicitly requested a different budget."
+      ),
   },
-  async ({ project_path, diff_target, branch, base_branch, review_focus, codex_command }) => {
+  async ({ project_path, diff_target, branch, base_branch, review_focus, codex_command, max_rounds }) => {
     const target = diff_target || "uncommitted";
+    const softCap = max_rounds || 5;
+    const hardCap = softCap + 5;
     const execOpts = { cwd: project_path, timeout: 30000, maxBuffer: 10 * 1024 * 1024 };
 
     // Resolve current branch name for metadata
@@ -283,6 +335,8 @@ server.tool(
       diff_label: diffLabel,
       branch: currentBranch,
       review_focus: review_focus || null,
+      max_rounds: softCap,
+      hard_cap: hardCap,
       runner_pid: null,
     };
     fs.writeFileSync(
@@ -294,7 +348,13 @@ server.tool(
     const runnerPath = new URL("review-runner.mjs", import.meta.url).pathname;
     const runner = spawn(
       "node",
-      [runnerPath, sessionDir, project_path, codex_command || "codex"],
+      [
+        runnerPath,
+        sessionDir,
+        project_path,
+        codex_command || "codex",
+        String(softCap),
+      ],
       {
         detached: true,
         stdio: ["ignore", "ignore", "ignore"],
@@ -322,8 +382,10 @@ server.tool(
               diff_label: diffLabel,
               files_changed: meta.files_changed.length,
               diff_size: diff.length,
+              max_rounds: softCap,
+              hard_cap: hardCap,
               message:
-                "Code review started. Codex is generating an initial review — poll with check_messages to read it.",
+                `Code review started with a soft budget of ${softCap} rounds (hard cap ${hardCap}). Codex is generating an initial review — arm a Monitor on ${sessionDir}/conversation.jsonl to be notified when it lands, then call check_messages to read the content. Avoid sleep-polling.`,
             },
             null,
             2
@@ -354,22 +416,40 @@ server.tool(
       ? JSON.parse(fs.readFileSync(metaPath, "utf-8"))
       : null;
 
-    // Parse structured findings from codex messages
-    const findings = { critical: [], suggestion: [], question: [], praise: [] };
+    // Parse structured findings from codex messages. Keep in sync with the
+    // taxonomy advertised in runner prompts and skill docs.
+    const FINDING_CATEGORIES = [
+      "CRITICAL",
+      "CORRECTNESS",
+      "ARCHITECTURE",
+      "SECURITY",
+      "ROBUSTNESS",
+      "SUGGESTION",
+      "QUESTION",
+      "PRAISE",
+      "NIT",
+    ];
+    const findings = Object.fromEntries(
+      FINDING_CATEGORIES.map((c) => [c.toLowerCase(), []])
+    );
     for (const msg of messages) {
       if (msg.from !== "codex") continue;
       const lines = msg.content.split("\n");
       for (const line of lines) {
-        if (line.includes("[CRITICAL]")) findings.critical.push(line.trim());
-        if (line.includes("[SUGGESTION]")) findings.suggestion.push(line.trim());
-        if (line.includes("[QUESTION]")) findings.question.push(line.trim());
-        if (line.includes("[PRAISE]")) findings.praise.push(line.trim());
+        for (const cat of FINDING_CATEGORIES) {
+          if (line.includes(`[${cat}]`)) {
+            findings[cat.toLowerCase()].push(line.trim());
+          }
+        }
       }
     }
 
     const hasLgtm = messages.some(
       (m) => m.from === "codex" && /\bLGTM\b/i.test(m.content)
     );
+
+    const status = readStat(session_id);
+    const budget = computeBudget(status, messages);
 
     return {
       content: [
@@ -381,6 +461,7 @@ server.tool(
               total_messages: messages.length,
               findings,
               approved: hasLgtm,
+              budget,
               messages,
             },
             null,
@@ -407,11 +488,22 @@ server.tool(
       return { content: [{ type: "text", text: "Error: Session not found" }] };
     }
     const msg = appendMsg(session_id, "claude", content);
+    const status = readStat(session_id);
+    const budget = computeBudget(status, readConv(session_id));
     return {
       content: [
         {
           type: "text",
-          text: `Message sent (id: ${msg.id}). Codex will be invoked to respond. Poll with check_messages.`,
+          text: JSON.stringify(
+            {
+              sent: true,
+              message_id: msg.id,
+              budget,
+              message: `Message sent (id: ${msg.id}). Codex will be invoked to respond. Arm a Monitor on the session's conversation.jsonl to be notified when the reply lands, then call check_messages to read it.`,
+            },
+            null,
+            2
+          ),
         },
       ],
     };
@@ -420,7 +512,7 @@ server.tool(
 
 server.tool(
   "check_messages",
-  "Check for new messages from Codex. Returns messages after the given ID, plus status info about whether Codex is still processing.",
+  "Check for new messages from Codex. Returns messages after the given ID, plus status info about whether Codex is still processing. Prefer Monitor on the session's conversation.jsonl to WAIT for new messages; use this tool to READ content once notified.",
   {
     session_id: z.string().describe("The session ID (dialog or review)"),
     since_id: z
@@ -454,6 +546,8 @@ server.tool(
       ? fs.readFileSync(errorPath, "utf-8")
       : null;
 
+    const budget = computeBudget(status, messages);
+
     return {
       content: [
         {
@@ -467,6 +561,7 @@ server.tool(
               codex_runner_alive: runnerAlive,
               codex_currently_processing: codexProcessing,
               last_error: lastError,
+              budget,
             },
             null,
             2
@@ -554,6 +649,8 @@ server.tool(
       logTail = logLines.slice(-5).join("\n");
     }
 
+    const budget = computeBudget(status, messages);
+
     return {
       content: [
         {
@@ -568,6 +665,7 @@ server.tool(
               last_error: lastError,
               started_at: status?.started_at,
               recent_log: logTail,
+              budget,
             },
             null,
             2
@@ -642,12 +740,14 @@ server.tool(
       const alive = status?.runner_pid
         ? isProcessAlive(status.runner_pid)
         : false;
+      const budget = computeBudget(status, messages);
       return {
         session_id: sessionId,
         type: sessionId.startsWith("review-") ? "review" : "dialog",
         started_at: status?.started_at,
         message_count: messages.length,
         runner_alive: alive,
+        budget,
         ...(status?.branch ? { branch: status.branch, base_branch: status.base_branch } : {}),
       };
     });

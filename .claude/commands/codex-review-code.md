@@ -1,7 +1,7 @@
 ---
 description: Have Codex review your code changes via the codex-dialog MCP server
-argument-hint: [optional: diff_target (uncommitted|staged|branch|commit:<sha>)] [optional: review focus]
-allowed-tools: mcp__codex-dialog__start_code_review, mcp__codex-dialog__check_messages, mcp__codex-dialog__send_message, mcp__codex-dialog__get_review_summary, mcp__codex-dialog__get_full_history, mcp__codex-dialog__check_partner_alive, mcp__codex-dialog__end_dialog, mcp__codex-dialog__list_sessions, Bash, Read, Glob, Grep, Edit, Write, AskUserQuestion, LSP
+argument-hint: [optional: diff_target (uncommitted|staged|branch|commit:<sha>)] [optional: review focus] [optional: rounds:N]
+allowed-tools: mcp__codex-dialog__start_code_review, mcp__codex-dialog__check_messages, mcp__codex-dialog__send_message, mcp__codex-dialog__get_review_summary, mcp__codex-dialog__get_full_history, mcp__codex-dialog__check_partner_alive, mcp__codex-dialog__end_dialog, mcp__codex-dialog__list_sessions, Bash, Read, Glob, Grep, Edit, Write, AskUserQuestion, LSP, Monitor
 ---
 
 # /codex-review-code - Code Review via Codex Dialog MCP Server
@@ -12,7 +12,7 @@ Uses the `codex-dialog` MCP server to have Codex CLI review your code changes in
 
 1. You call `start_code_review` which generates a diff and spawns a background Codex runner
 2. Codex **automatically generates an initial review** from the diff (no first message needed)
-3. You poll with `check_messages` to read the review
+3. You arm a `Monitor` on the session's `conversation.jsonl` that fires one notification when Codex responds, then call `check_messages` to read it
 4. You respond to findings with `send_message`, discussing or fixing issues
 5. Codex re-reviews and responds until it says "LGTM" or you end the session
 
@@ -35,7 +35,8 @@ git branch --show-current
 
 Parse $ARGUMENTS to determine:
 - **diff_target**: first arg if it matches `uncommitted`, `staged`, `branch`, or `commit:<sha>`. Default: `uncommitted`
-- **review_focus**: remaining text after diff_target, if any (e.g. "security", "performance", "correctness")
+- **review_focus**: remaining text after diff_target (excluding any `rounds:N` token), if any (e.g. "security", "performance", "correctness")
+- **max_rounds**: if any argument matches `rounds:N` (integer), parse it and pass as `max_rounds`. Otherwise DO NOT pass `max_rounds` — let the server use its tuned default of 5. **Never invent or adjust this value on your own.** The default exists for a reason: it forces Codex to deliver complete feedback each round instead of drip-feeding. Only override when the user explicitly provided `rounds:N` in the command.
 
 If $ARGUMENTS is empty, use `uncommitted` as the diff target with no specific focus.
 
@@ -46,6 +47,7 @@ If $ARGUMENTS is empty, use `uncommitted` as the diff target with no specific fo
 Call `start_code_review` with:
 - `project_path`: the git project root
 - `diff_target`: parsed from arguments (default: `uncommitted`)
+- `max_rounds`: only if the user provided `rounds:N`. Otherwise omit the parameter entirely and let the server default to 5.
 - `review_focus`: Always prepend the adversarial review stance to whatever focus the user specified. The `review_focus` string should begin with the following, then append the user's focus (if any):
 
 ```
@@ -56,34 +58,64 @@ FEEDBACK FRAMING: When you report findings, frame them as interesting observatio
 
 - `branch` / `base_branch`: only if diff_target is `branch`
 
-Save the returned `session_id` — you need it for all subsequent calls.
+Save the returned `session_id` — you need it for all subsequent calls. Note the returned `max_rounds` and `hard_cap` values — you'll want to keep an eye on the budget as the review progresses.
 
-The response will confirm the review started and tell you to poll.
+The response will confirm the review started and point you at arming a Monitor on the session's `conversation.jsonl` to wait for Codex's initial review.
+
+### Round Budget (Important)
+
+The server enforces a **soft round budget** (default: 5 rounds). Codex is prompted to deliver COMPLETE feedback in each message — no drip-feeding across rounds. A hard cap of `soft + 5` rounds stops the session entirely if the conversation overruns.
+
+You'll see the current budget in every `check_messages`, `send_message`, and `check_partner_alive` response under the `budget` key: `{ max_rounds, hard_cap, rounds_used, rounds_remaining, hard_rounds_remaining, past_soft_cap }`.
+
+Use the budget as a cue, not a stopwatch:
+- If Codex's first review looks thin or says things like "more to follow" / "I'll get to X next round," push back explicitly: *"Please include all remaining findings in this message — the session has a round budget, and holding findings back risks running out before they're raised."*
+- If you're approaching `rounds_remaining = 1`, consolidate your own response too: bundle all fixes and all disagreements into a single message so Codex has the material for a final comprehensive round.
+- Going past the soft cap is OK when a genuine issue needs more back-and-forth. Going past for pedantic follow-ups is not.
 
 ---
 
-## PHASE 2: POLL FOR INITIAL REVIEW
+## PHASE 2: WAIT FOR INITIAL REVIEW (Monitor)
 
-Codex is generating the initial review in the background. Poll with `check_messages`:
-- Pass `session_id` and `since_id: 0`
-- If `codex_currently_processing` is true and no new messages, wait ~10 seconds and poll again
-- Keep polling until you get a message from Codex
+Codex is generating the initial review in the background. Instead of sleep-polling `check_messages`, arm a **Monitor** that fires one notification the moment Codex writes its first message. Each message is appended as a JSON line to `~/.claude/dialogs/<session_id>/conversation.jsonl`, so a tailed grep is the wake-up signal.
 
-Once you receive the initial review, read it carefully. The review will contain findings categorized as:
-- **[CRITICAL]** — bugs, security issues (must address)
-- **[SUGGESTION]** — improvements (discuss or fix)
+**Monitor command** (replace `<SESSION_ID>` with the actual session id):
+
+```bash
+tail -F -n 0 "$HOME/.claude/dialogs/<SESSION_ID>/conversation.jsonl" 2>/dev/null | \
+  grep -m 1 --line-buffered -E '"from":"(codex|system)"'
+```
+
+`grep -m 1` exits after the first match, so the Monitor produces exactly one notification per wait and then stops cleanly.
+
+**Monitor parameters:**
+- `description`: `codex review response in <SESSION_ID>`
+- `timeout_ms`: `900000` (15 min — large diffs can run long)
+- `persistent`: `false`
+
+When the notification arrives, call `check_messages` with `since_id: 0` (or `get_full_history`) to read the structured content — the notification itself just confirms a new message landed.
+
+**If the Monitor hits its timeout with no event**, call `check_partner_alive`. If the runner died, restart with a new `start_code_review`. Also inspect `~/.claude/dialogs/<SESSION_ID>/last_error.txt` if it exists.
+
+Once you receive the initial review, read it carefully. The review uses a severity-ordered taxonomy:
+- **[CRITICAL]** — bugs, security issues, data loss risk (must address)
+- **[CORRECTNESS]** / **[ARCHITECTURE]** / **[SECURITY]** / **[ROBUSTNESS]** — substantive issues (address)
+- **[SUGGESTION]** — concrete improvements with demonstrable benefit (discuss or fix)
 - **[QUESTION]** — needs clarification (answer)
-- **[PRAISE]** — good patterns (acknowledge)
+- **[PRAISE]** — optional callouts of patterns worth keeping (acknowledge briefly)
+- **[NIT]** — cosmetic/stylistic (address only if trivial; often fine to skip)
+
+**If the review feels thin for the size of the diff** — or if Codex wrote things like "I'll cover X next round," "more findings to follow," etc. — that's a drip-feed signal. Respond by asking Codex to deliver the full set *now*, not next round.
 
 ---
 
 ## PHASE 3: REVIEW DISCUSSION LOOP
 
-For each round (max 5 rounds or until LGTM):
+Loop until Codex says LGTM, the hard cap is hit, or the remaining disagreements need the user. Check the `budget` field in each `check_messages` / `send_message` response to know where you stand.
 
 ### Step 3.1: Investigate and Respond to Findings
 
-**Treat each finding as useful signal, not pressure.** Codex's job is to be adversarial — to assume something is wrong and try to prove it. That means many findings will be real issues worth fixing, but some will be false positives that you can refute with evidence. Both outcomes are valuable. There is no urgency.
+**Treat each finding as useful signal.** Codex's job is to be adversarial — many findings will be real issues worth fixing, some will be false positives that you can refute with evidence. Both outcomes are valuable.
 
 For each finding Codex raised:
 1. **Read the actual code** at the location mentioned. Use LSP for go-to-definition and find-references to trace the full picture.
@@ -100,17 +132,21 @@ For each finding Codex raised:
 
 ### Step 3.2: Send Your Response
 
-Use `send_message` to send your response to Codex. Include:
+Use `send_message` to send ONE consolidated response covering everything you did this round. Include:
 - What you fixed and how (with enough detail that Codex can verify)
 - What you disagree with and why (with code evidence — file paths, line numbers, logic traces)
 - Answers to any questions
-- If you found the finding insightful and it revealed something you hadn't considered, say so — it helps Codex calibrate
+- If a finding revealed something you hadn't considered, say so briefly — it helps Codex calibrate
+
+**Consolidate, don't split.** Don't send a fix in one message and your disagreement in the next — both cost a round. Bundle everything into a single message so Codex has the full picture for its follow-up.
 
 **You have full permission to disagree with Codex.** If a finding doesn't hold up after investigation, say so directly and explain why. Honest technical disagreement, backed by evidence, is more valuable than agreeing just to move forward.
 
-### Step 3.3: Poll for Codex Follow-up
+**If the previous Codex message hinted at drip-feeding** (e.g. "I'll look at X next round," thin coverage for a large diff), add an explicit line: *"Please include any remaining findings in your next message — we have a limited round budget and I want to make sure I hear everything."*
 
-Poll with `check_messages` (using the latest `since_id`) until Codex responds.
+### Step 3.3: Wait for Codex Follow-up (Monitor)
+
+Arm the same one-shot **Monitor** described in Phase 2 to wait for Codex's next message — `grep -m 1` ensures it fires exactly once per round. When the notification arrives, call `check_messages` with the latest `since_id` to read the content.
 
 Codex will:
 - Verify your fixes look correct
@@ -159,9 +195,9 @@ Call `end_dialog` to clean up the session.
 ## KEY PRINCIPLES
 
 1. **Use the MCP tools** — all communication goes through the codex-dialog server
-2. **Poll patiently** — Codex reviews take time, especially on large diffs (up to 10 min per turn)
-3. **Fix in code, explain in message** — make actual fixes, then tell Codex what you did
-4. **Evidence-based** — back up agreements AND disagreements with actual code
-5. **User is arbiter** — when you and Codex can't agree, ask the user
-6. **Findings are signal, not pressure** — each finding is information to investigate, not a demand to rush. Take the time to understand before acting. A thoughtful response is always better than a fast one.
+2. **Use Monitor to wait, not sleep loops** — `tail -F | grep -m 1` on `conversation.jsonl` fires one notification per codex response. Don't burn context re-calling `check_messages` on a timer.
+3. **Respect the round budget** — default 5 soft / 10 hard. Watch `budget` in server responses. Consolidate into single messages; push back on drip-feeding. Never change `max_rounds` unless the user explicitly asked.
+4. **Fix in code, explain in message** — make actual fixes, then tell Codex what you did
+5. **Evidence-based** — back up agreements AND disagreements with actual code
+6. **User is arbiter** — when you and Codex can't agree, ask the user
 7. **Honest over agreeable** — if Codex is wrong, say so with evidence. If Codex is right, fix it properly. Never patch something superficially just to resolve a finding.

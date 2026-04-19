@@ -1,7 +1,7 @@
 ---
 description: Have Codex audit files or directories for bugs, architecture issues, and correctness
-argument-hint: <file or directory paths> [optional: focus area]
-allowed-tools: mcp__codex-dialog__start_dialog, mcp__codex-dialog__check_messages, mcp__codex-dialog__send_message, mcp__codex-dialog__get_full_history, mcp__codex-dialog__check_partner_alive, mcp__codex-dialog__end_dialog, mcp__codex-dialog__list_sessions, Bash, Read, Glob, Grep, Edit, Write, AskUserQuestion, LSP
+argument-hint: <file or directory paths> [optional: focus area] [optional: rounds:N]
+allowed-tools: mcp__codex-dialog__start_dialog, mcp__codex-dialog__check_messages, mcp__codex-dialog__send_message, mcp__codex-dialog__get_full_history, mcp__codex-dialog__check_partner_alive, mcp__codex-dialog__end_dialog, mcp__codex-dialog__list_sessions, Bash, Read, Glob, Grep, Edit, Write, AskUserQuestion, LSP, Monitor
 ---
 
 # /codex-audit - Comprehensive Code Audit via Codex Dialog MCP Server
@@ -12,7 +12,7 @@ Uses the `codex-dialog` MCP server to have Codex CLI perform a deep audit of exi
 
 1. You read the target files and call `start_dialog` with a structured audit prompt
 2. You send the code contents to Codex via `send_message`
-3. Codex audits the code and responds with findings
+3. You arm a `Monitor` on the session's `conversation.jsonl` that fires one notification when Codex responds, then call `check_messages` to read it
 4. You investigate findings, discuss, and fix issues
 5. Discussion continues until Codex is satisfied or you escalate to the user
 
@@ -38,6 +38,7 @@ echo "Project: $PROJECT_DIR"
 Parse $ARGUMENTS to determine:
 - **targets**: file paths, directory paths, or glob patterns to audit. Can be multiple, space-separated.
 - **focus**: if the last argument(s) look like a focus area rather than a path (e.g. "security", "error handling", "concurrency"), treat it as the review focus.
+- **max_rounds**: if any argument is `rounds:N` (integer), parse and pass it to `start_dialog` as `max_rounds`. Otherwise OMIT the parameter — the server will default to 5. **Never invent or adjust this value on your own.** The 5-round default is tuned to make Codex deliver complete feedback each round instead of drip-feeding. Only override when the user explicitly provided `rounds:N`.
 
 Examples:
 - `src/` — audit all source files in src/
@@ -67,9 +68,10 @@ Note any files that were skipped so Codex knows what it hasn't seen.
 
 Call `start_dialog` with:
 - `project_path`: the git project root
+- `max_rounds`: only if the user provided `rounds:N`. Otherwise OMIT this parameter.
 - `problem_description`: A brief summary like: "Comprehensive code audit of [target files]. Codex will review for bugs, architecture issues, correctness, and potential problems."
 
-Save the returned `session_id`.
+Save the returned `session_id`. Note the `max_rounds` and `hard_cap` values returned — you'll track budget via the `budget` field in subsequent tool responses.
 
 ### Step 1.1: Send the Audit Prompt
 
@@ -95,6 +97,12 @@ You have full access to the project codebase. Read any file you need to understa
 ### How to Frame Your Findings
 
 Present findings as interesting observations and open questions, not urgent demands. Use language like "I noticed...", "Worth investigating whether...", "This is an interesting case — what happens when...". Frame each finding as a collaborative puzzle to solve together. Be direct and specific, but avoid language that implies urgency or disappointment. If you genuinely find the code to be solid after thorough investigation, say so clearly and explain what you checked — forced criticism is worse than honest approval.
+
+### Deliver Complete Findings Each Round
+
+This audit has a round budget (the runner will show you the current round / soft cap / hard cap in each prompt). Deliver EVERY finding you have in each message — do not hold items back for "next round." Drip-feeding burns the budget and risks the conversation ending before you raise important issues. Rounds exist for verifying fixes and genuine new follow-ups, not for releasing findings you already had.
+
+Apply a severity bar: a finding only earns a slot if a reasonable senior engineer would change a decision based on it. Skip stylistic and naming-level nitpicks unless they impact correctness or understanding — if they're truly worth mentioning at all, group them into one short "Nits" section at the end. If nothing serious survives investigation, say so plainly.
 
 ### What to Audit
 
@@ -141,14 +149,16 @@ Examine this code comprehensively for:
 
 ### Response Format
 
-For each finding, categorize as:
-- [CRITICAL] — bugs, security issues, data loss risk
-- [ARCHITECTURE] — design problems, coupling, abstraction issues
-- [CORRECTNESS] — logic errors, edge cases, race conditions
-- [ROBUSTNESS] — error handling, resource management, failure modes
-- [SECURITY] — vulnerabilities, input validation, auth issues
-- [SUGGESTION] — improvements, better patterns, maintainability
-- [QUESTION] — needs investigation or clarification
+For each finding, categorize as (do not inflate categories — definitions matter):
+- **[CRITICAL]** — bugs, security issues, data loss risk
+- **[ARCHITECTURE]** — design problems, coupling, broken abstractions
+- **[CORRECTNESS]** — logic errors, edge cases, race conditions
+- **[ROBUSTNESS]** — error handling, resource management, failure modes
+- **[SECURITY]** — vulnerabilities, input validation, auth issues
+- **[SUGGESTION]** — concrete improvement with demonstrable benefit; not a stylistic preference
+- **[QUESTION]** — genuinely needs investigation or clarification; used sparingly
+- **[PRAISE]** — optional; call out a pattern genuinely worth keeping, one or two lines. Only when honest
+- **[NIT]** — cosmetic/stylistic only. Group into one short trailing "Nits" section or omit
 
 For each finding, include:
 1. The specific file and location
@@ -161,13 +171,27 @@ At the end, give an overall assessment of the code's health.
 
 ---
 
-## PHASE 2: POLL FOR INITIAL AUDIT
+## PHASE 2: WAIT FOR INITIAL AUDIT (Monitor)
 
-Poll with `check_messages`:
-- Pass `session_id` and `since_id` (the id of the message you just sent)
-- If `codex_currently_processing` is true and no new messages, wait ~10 seconds and poll again
-- Keep polling until you get a response from Codex
-- Audits can take longer than diff reviews — be patient (up to 10 minutes)
+Instead of sleep-polling `check_messages`, arm a **Monitor** that fires one notification the moment Codex writes its audit. The conversation is appended to `~/.claude/dialogs/<session_id>/conversation.jsonl`, so a tailed grep on that file is the wake-up signal.
+
+**Monitor command** (replace `<SESSION_ID>` with the actual session id):
+
+```bash
+tail -F -n 0 "$HOME/.claude/dialogs/<SESSION_ID>/conversation.jsonl" 2>/dev/null | \
+  grep -m 1 --line-buffered -E '"from":"(codex|system)"'
+```
+
+`grep -m 1` exits after the first match, so the Monitor produces exactly one notification per wait and then stops cleanly.
+
+**Monitor parameters:**
+- `description`: `codex audit response in <SESSION_ID>`
+- `timeout_ms`: `900000` (15 min — audits can run long)
+- `persistent`: `false`
+
+When the notification arrives, call `check_messages` with the latest `since_id` (or `get_full_history`) to read the structured content — the notification itself just confirms a new message landed.
+
+**If the Monitor hits its timeout with no event**, call `check_partner_alive`. If the runner died, restart with a new `start_dialog`. Also inspect `~/.claude/dialogs/<SESSION_ID>/last_error.txt` if it exists.
 
 Read the audit carefully once it arrives.
 
@@ -175,11 +199,11 @@ Read the audit carefully once it arrives.
 
 ## PHASE 3: AUDIT DISCUSSION LOOP
 
-For each round (max 5 rounds or until Codex is satisfied):
+Loop until Codex is satisfied (no remaining serious findings), the hard cap is hit, or the remaining disagreements need the user. Watch the `budget` field in each `check_messages` / `send_message` / `check_partner_alive` response.
 
 ### Step 3.1: Investigate Findings
 
-**Treat each finding as useful signal, not pressure.** Codex's job is to be adversarial — to assume something is wrong and try to prove it. Many findings will reveal real issues, but some will be false positives. Both outcomes are valuable. There is no urgency.
+**Treat each finding as useful signal.** Codex's job is to be adversarial — many findings will reveal real issues, some will be false positives. Both outcomes are valuable.
 
 For each finding Codex raised:
 1. **Read the actual code** at the location mentioned. Use LSP for go-to-definition, find-references, type information to trace the full picture.
@@ -196,17 +220,21 @@ For each finding Codex raised:
 
 ### Step 3.2: Send Your Response
 
-Use `send_message` to respond with:
+Use `send_message` to send ONE consolidated response per round covering everything:
 - What you fixed and how (with enough detail for Codex to verify)
 - What you disagree with and why (with code evidence)
 - What you found surprising or insightful
 - Any follow-up areas you'd like Codex to look at based on what you've learned
 
+**Consolidate, don't split.** Don't send a fix in one message and your disagreement in the next — both cost a round. Bundle everything into a single message so Codex has the full picture.
+
 **You have full permission to disagree with Codex.** Honest technical disagreement backed by evidence is more valuable than agreeing to move forward.
 
-### Step 3.3: Poll for Follow-up
+**If the previous Codex message hinted at drip-feeding** (e.g. "I'll look at X next round," thin coverage for the scope), add: *"Please include any remaining findings in your next message — we have a limited round budget and I want to make sure I hear everything."*
 
-Poll with `check_messages` until Codex responds.
+### Step 3.3: Wait for Follow-up (Monitor)
+
+Arm the same one-shot **Monitor** described in Phase 2 to wait for Codex's next message — `grep -m 1` ensures it fires exactly once per round. When the notification arrives, call `check_messages` with the latest `since_id` to read the content.
 
 Codex will:
 - Verify fixes look correct
@@ -257,10 +285,10 @@ Call `end_dialog` to clean up the session.
 ## KEY PRINCIPLES
 
 1. **Use the MCP tools** — all communication goes through the codex-dialog server
-2. **Poll patiently** — comprehensive audits take time (up to 10 min per turn)
-3. **Fix in code, explain in message** — make actual fixes, then tell Codex what you did
-4. **Evidence-based** — back up agreements AND disagreements with actual code
-5. **User is arbiter** — when you and Codex can't agree, ask the user
-6. **Findings are signal, not pressure** — each finding is information to investigate, not a demand to rush
+2. **Use Monitor to wait, not sleep loops** — `tail -F | grep -m 1` on `conversation.jsonl` fires one notification per codex response. Don't burn context re-calling `check_messages` on a timer.
+3. **Respect the round budget** — default 5 soft / 10 hard. Watch `budget` in server responses. Consolidate into single messages; push back on drip-feeding. Never change `max_rounds` unless the user explicitly asked.
+4. **Fix in code, explain in message** — make actual fixes, then tell Codex what you did
+5. **Evidence-based** — back up agreements AND disagreements with actual code
+6. **User is arbiter** — when you and Codex can't agree, ask the user
 7. **Honest over agreeable** — if Codex is wrong, say so with evidence. If Codex is right, fix it properly
 8. **Depth over breadth** — a thorough audit of fewer files beats a shallow scan of everything

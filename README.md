@@ -14,16 +14,16 @@ An MCP server that enables back-and-forth discussions between [Claude Code](http
 1. Claude calls `start_dialog` with a problem description
 2. The server spawns a background runner process
 3. Claude sends messages via `send_message`, and the runner invokes Codex to respond
-4. Claude polls for replies with `check_messages`
+4. Claude waits for replies by arming a Monitor on the session's `conversation.jsonl`, then reads the content with `check_messages` once notified
 5. The conversation continues back and forth until ended or a turn/idle limit is reached
 
 ### Code review mode
 1. Claude calls `start_code_review` with a project path and branch info
 2. The server generates a git diff and spawns a review runner
 3. Codex **automatically generates an initial review** from the diff — no first message needed
-4. Claude reads the review via `check_messages` and responds with fixes or discussion
+4. Claude waits for the review via Monitor, then reads it via `check_messages` and responds with fixes or discussion
 5. Back and forth continues until Codex says "LGTM" or the session is ended
-6. Review findings are categorized as `[CRITICAL]`, `[SUGGESTION]`, `[QUESTION]`, or `[PRAISE]`
+6. Review findings are categorized as `[CRITICAL]`, `[CORRECTNESS]`, `[ARCHITECTURE]`, `[SECURITY]`, `[ROBUSTNESS]`, `[SUGGESTION]`, `[QUESTION]`, `[PRAISE]` (optional), or `[NIT]` (cosmetic, grouped at the end)
 
 ### Code audit mode
 1. Claude reads the target files and calls `start_dialog` with the code and an audit prompt
@@ -73,7 +73,7 @@ npm run uninstall
 | Tool | Description |
 |------|-------------|
 | `send_message` | Send a message to Codex in an ongoing session |
-| `check_messages` | Poll for new messages from Codex |
+| `check_messages` | Read new messages from Codex (use a Monitor on the session's `conversation.jsonl` to wait for notifications; call this tool to fetch content) |
 | `get_full_history` | Get the complete conversation history |
 | `check_partner_alive` | Check if the Codex runner process is still running |
 | `end_dialog` | End the session and get the final conversation |
@@ -91,13 +91,16 @@ After installation, three slash commands are available in Claude Code:
 /codex-review-code branch             Review current branch vs main
 /codex-review-code commit:<sha>       Review a specific commit
 /codex-review-code staged security    Review staged changes with security focus
+/codex-review-code uncommitted rounds:7   Review with a custom 7-round soft budget
 
 /codex-review-plan                    Review an auto-detected plan file
 /codex-review-plan path/to/plan.md    Review a specific plan file
+/codex-review-plan rounds:3           Review with a tighter 3-round budget
 
 /codex-audit src/                     Audit all source files for bugs and issues
 /codex-audit src/auth.ts src/db.ts    Audit specific files
 /codex-audit src/api/ security        Audit with a security focus
+/codex-audit src/ rounds:8            Audit with a looser 8-round budget
 ```
 
 ### Natural language
@@ -118,12 +121,21 @@ Both runners have sensible defaults. The review runner uses longer timeouts to a
 
 | Setting | Dialog | Review |
 |---------|--------|--------|
-| Max turns | 50 | 30 |
+| Soft round budget (default) | 5 | 5 |
+| Hard round cap | soft + 5 | soft + 5 |
 | Codex timeout per invocation | 5 min | 10 min |
 | Idle timeout | 15 min | 30 min |
 | Poll interval | 3s | 5s |
 
 These can be adjusted in `src/dialog-runner.mjs` and `src/review-runner.mjs` respectively.
+
+### Round budget
+
+Each session has a **soft round budget** (default 5) that the runner injects into every Codex prompt. The purpose is to push Codex to deliver **complete feedback in each message** rather than drip-feeding findings across rounds — wording is explicit about "dump everything you found" and "thoroughness, not speed." If the conversation needs more, a **hard cap** of soft+5 still allows overflow without fabricating urgency; once hit, the runner refuses further Codex turns.
+
+Every `check_messages`, `send_message`, and `check_partner_alive` response includes a `budget` object: `{ max_rounds, hard_cap, rounds_used, rounds_remaining, hard_rounds_remaining, past_soft_cap }` so Claude can track where it stands.
+
+Override per-session with `max_rounds` in `start_dialog` / `start_code_review`, or via the `rounds:N` arg on any slash command.
 
 ## License
 

@@ -18,6 +18,8 @@ import { readConversation, appendMessage, sleep } from "./shared.mjs";
 const sessionDir = process.argv[2];
 const projectPath = process.argv[3] || process.cwd();
 const codexCommand = process.argv[4] || "codex";
+const SOFT_CAP = parseInt(process.argv[5], 10) || 5;
+const HARD_CAP = SOFT_CAP + 5;
 
 if (!sessionDir) {
   process.exit(1);
@@ -31,7 +33,7 @@ const PROCESSING_PATH = path.join(sessionDir, "codex_processing");
 const ERROR_PATH = path.join(sessionDir, "last_error.txt");
 const LOG_PATH = path.join(sessionDir, "runner.log");
 
-const MAX_TURNS = 30;
+const MAX_TURNS = HARD_CAP;
 const POLL_INTERVAL_MS = 5000;
 const CODEX_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes per invocation
 const MAX_IDLE_MS = 30 * 60 * 1000; // 30 min idle timeout
@@ -47,7 +49,38 @@ function log(msg) {
 
 // ── Review prompt builder ───────────────────────────────────────────────────
 
-function buildReviewPrompt(diff, meta, messages) {
+function buildRoundBudgetBlock(codexTurns, softCap, hardCap) {
+  const currentRound = codexTurns + 1;
+  const remaining = Math.max(0, softCap - currentRound);
+  const pastSoft = currentRound > softCap;
+
+  let block = `## Round Budget
+
+This review has a soft budget of ${softCap} rounds. You are writing round ${currentRound} of ${softCap}. Rounds remaining after this one: ${remaining}.
+`;
+
+  if (pastSoft) {
+    block += `
+**OVERTIME:** You are past the soft budget (round ${currentRound}, soft cap ${softCap}, hard cap ${hardCap}). Continue only if the remaining issues genuinely require more back-and-forth. Otherwise wrap up with a final summary this round and approve if appropriate.
+`;
+  }
+
+  block += `
+How to use the budget well:
+
+1. **Dump every finding in this message.** Do not hold findings back for "next round." If your investigation surfaced ten issues, include all ten here. Future rounds are for verifying fixes and genuine follow-ups — not for releasing material you already had. Drip-feeding burns rounds and risks the review ending before you raise important findings.
+
+2. **Consolidate and order by severity.** Group related findings. Lead with CRITICAL, then CORRECTNESS / ARCHITECTURE / SECURITY / ROBUSTNESS, then SUGGESTION, then a single short "Nits" section at the end — or omit nits entirely.
+
+3. **Signal over noise.** A finding earns a slot only if a reasonable senior engineer would change a decision based on it. Skip style, naming, and cosmetic preferences unless they impact correctness or understanding. If nothing serious survives investigation after you've genuinely looked, say so plainly — a short honest review is better than padding the list with manufactured concerns.
+
+4. **Thoroughness, not speed.** The budget is not a countdown clock. Take the time to investigate each finding properly before you write. The goal is that when you DO write, your message is COMPLETE. Brevity of conversation, not brevity of message.
+`;
+
+  return block;
+}
+
+function buildReviewPrompt(diff, meta, messages, codexTurns) {
   let conversationMessages = messages;
   if (messages.length > MAX_CONVERSATION_MESSAGES) {
     const first = messages.slice(0, 2);
@@ -73,6 +106,8 @@ function buildReviewPrompt(diff, meta, messages) {
   }
 
   let prompt = `You are a thorough code reviewer examining ${meta.diff_label || `changes on branch "${meta.branch}" compared to "${meta.base_branch}"`}.
+
+${buildRoundBudgetBlock(codexTurns, SOFT_CAP, HARD_CAP)}
 
 ## Review Focus
 ${meta.review_focus || "General code review — correctness, edge cases, error handling, naming, test coverage."}
@@ -100,7 +135,12 @@ You can read any files in this directory to understand context beyond the diff.
         prompt += `\n${msg.content}\n`;
         continue;
       }
-      const speaker = msg.from === "claude" ? "Claude" : "Codex (you)";
+      const speaker =
+        msg.from === "claude"
+          ? "Claude"
+          : msg.from === "system"
+            ? "System"
+            : "Codex (you)";
       prompt += `\n### ${speaker} [message #${msg.id}]:\n${msg.content}\n`;
     }
     prompt += `\n`;
@@ -112,9 +152,19 @@ You can read any files in this directory to understand context beyond the diff.
     prompt += `## Your Task — Initial Review
 - Examine each changed file carefully. Read the FULL file (not just the diff) to understand context.
 - For each significant finding, cite the file and line number.
-- Categorize findings: [CRITICAL] for bugs/security issues, [SUGGESTION] for improvements, [QUESTION] for things needing clarification, [PRAISE] for good patterns worth noting.
 - Be specific. "This might have issues" is not useful. "Line 42 of foo.ts: the null check is missing for the case where X is undefined because Y" is useful.
 ${meta.review_focus ? `- Prioritize your review around: ${meta.review_focus}` : ""}
+- Categorize each finding (definitions matter — do not inflate categories):
+  - **[CRITICAL]** — bugs, security issues, data loss risk, correctness failures. Must address.
+  - **[CORRECTNESS]** — logic errors, edge cases, race conditions, incorrect error handling.
+  - **[ARCHITECTURE]** — design problems, coupling issues, broken abstractions.
+  - **[SECURITY]** — input validation, auth, secrets, unsafe patterns.
+  - **[ROBUSTNESS]** — error paths, resource cleanup, partial failure handling.
+  - **[SUGGESTION]** — concrete improvement with demonstrable benefit. Not a stylistic preference. If you cannot explain why a senior engineer would adopt it, omit it.
+  - **[QUESTION]** — needs clarification before you can conclude. Used sparingly.
+  - **[PRAISE]** — optional; call out a pattern genuinely worth keeping, kept to one or two lines. Only when honest — forced praise is worthless.
+  - **[NIT]** — cosmetic/stylistic. Group into one short trailing "Nits" section or omit entirely.
+- Deliver the COMPLETE review in this message. Do not hold findings back for later rounds.
 - At the end, give an overall assessment: approve, request changes, or needs discussion.
 
 Respond with ONLY your review. Do NOT wrap it in any JSON or metadata.`;
@@ -123,7 +173,8 @@ Respond with ONLY your review. Do NOT wrap it in any JSON or metadata.`;
 - Address Claude's responses to your review comments.
 - If Claude fixed something, verify the fix looks correct by reading the current file.
 - If Claude disagreed with a finding, either accept their reasoning or explain why you still think there's an issue.
-- If new issues came up in discussion, address those too.
+- If new issues came up in discussion, address those too — but only if they meet the same severity bar as the initial review.
+- Deliver complete follow-up this message. Do not split follow-up findings across additional rounds.
 - When all significant issues are resolved, say "LGTM" with a brief summary of what was reviewed and resolved.
 
 Respond with ONLY your message. Do NOT wrap it in any JSON or metadata.`;
@@ -224,7 +275,7 @@ async function main() {
   log(`Branch: ${meta.branch} vs ${meta.base_branch}`);
   log(`Codex command: ${codexCommand}`);
   log(`Review focus: ${meta.review_focus || "general"}`);
-  log(`Max turns: ${MAX_TURNS}, Codex timeout: ${CODEX_TIMEOUT_MS / 1000}s, Idle timeout: ${MAX_IDLE_MS / 1000}s`);
+  log(`Soft cap: ${SOFT_CAP} rounds, hard cap: ${HARD_CAP} rounds, Codex timeout: ${CODEX_TIMEOUT_MS / 1000}s, Idle timeout: ${MAX_IDLE_MS / 1000}s`);
 
   // ── Auto-start: generate initial review without waiting for Claude ──
   log("Generating initial review from diff...");
@@ -234,7 +285,7 @@ async function main() {
   } catch {}
 
   try {
-    const prompt = buildReviewPrompt(diff, meta, []);
+    const prompt = buildReviewPrompt(diff, meta, [], 0);
     const response = await runCodex(prompt);
 
     if (response) {
@@ -251,8 +302,8 @@ async function main() {
     fs.writeFileSync(ERROR_PATH, err.message);
     appendMessage(
       sessionDir,
-      "codex",
-      `[SYSTEM] Failed to generate initial review: ${err.message}. Claude can still send messages to retry.`
+      "system",
+      `Failed to generate initial review: ${err.message}. Claude can still send messages to retry.`
     );
   }
 
@@ -287,7 +338,7 @@ async function main() {
       } catch {}
 
       try {
-        const prompt = buildReviewPrompt(diff, meta, messages);
+        const prompt = buildReviewPrompt(diff, meta, messages, codexTurns);
         const response = await runCodex(prompt);
 
         if (response) {
@@ -309,8 +360,8 @@ async function main() {
           log("Too many consecutive errors, shutting down");
           appendMessage(
             sessionDir,
-            "codex",
-            `[SYSTEM] Review runner encountered ${MAX_CONSECUTIVE_ERRORS} consecutive errors and is shutting down. Last error: ${err.message}`
+            "system",
+            `Review runner encountered ${MAX_CONSECUTIVE_ERRORS} consecutive errors and is shutting down. Last error: ${err.message}`
           );
           break;
         }
@@ -325,8 +376,8 @@ async function main() {
         log(`Idle timeout reached (${(idleMs / 1000).toFixed(0)}s). Shutting down.`);
         appendMessage(
           sessionDir,
-          "codex",
-          "[SYSTEM] Review runner shut down due to inactivity. Start a new review to continue."
+          "system",
+          "Review runner shut down due to inactivity. Start a new review to continue."
         );
         break;
       }
@@ -336,11 +387,11 @@ async function main() {
   }
 
   if (codexTurns >= MAX_TURNS) {
-    log(`Max turns (${MAX_TURNS}) reached`);
+    log(`Hard cap (${HARD_CAP}) reached`);
     appendMessage(
       sessionDir,
-      "codex",
-      `[SYSTEM] Maximum review turns (${MAX_TURNS}) reached. Summarize findings and start a new review if more discussion is needed.`
+      "system",
+      `Hard round cap (${HARD_CAP}) reached — soft budget was ${SOFT_CAP}. No further Codex turns will be invoked in this session. Summarize remaining findings and start a new review if more discussion is needed.`
     );
   }
 
