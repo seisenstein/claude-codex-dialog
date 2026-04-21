@@ -83,8 +83,20 @@ server.tool(
       .describe(
         "Soft round budget (default: 5). Codex is asked to deliver all feedback within this many rounds. Hard cap = max_rounds + 5. Do not override unless the user explicitly requested a different budget."
       ),
+    reasoning_effort: z
+      .enum(["low", "medium", "high", "xhigh"])
+      .optional()
+      .describe(
+        "Codex reasoning effort level. Higher = deeper analysis but slower. When omitted, Codex uses its own configured default. Only override if the user explicitly requested a different effort level."
+      ),
+    model: z
+      .string()
+      .optional()
+      .describe(
+        "Codex model to use (e.g. 'gpt-5.4', 'gpt-5.3-codex', 'gpt-5.4-mini'). Omit to use Codex's default."
+      ),
   },
-  async ({ problem_description, project_path, codex_command, max_rounds }) => {
+  async ({ problem_description, project_path, codex_command, max_rounds, reasoning_effort, model }) => {
     const sessionId = `dialog-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
     const sessionDir = resolveSessionDir(sessionId);
     fs.mkdirSync(sessionDir, { recursive: true });
@@ -107,6 +119,8 @@ server.tool(
       codex_command: codex_command || "codex",
       max_rounds: softCap,
       hard_cap: hardCap,
+      reasoning_effort: reasoning_effort || null,
+      model: model || null,
       runner_pid: null,
     };
     fs.writeFileSync(
@@ -116,15 +130,18 @@ server.tool(
 
     // Spawn the dialog runner in background
     const runnerPath = new URL("dialog-runner.mjs", import.meta.url).pathname;
+    const runnerArgs = [
+      runnerPath,
+      sessionDir,
+      project_path || process.cwd(),
+      codex_command || "codex",
+      String(softCap),
+      reasoning_effort || "",
+      model || "",
+    ];
     const runner = spawn(
       "node",
-      [
-        runnerPath,
-        sessionDir,
-        project_path || process.cwd(),
-        codex_command || "codex",
-        String(softCap),
-      ],
+      runnerArgs,
       {
         detached: true,
         stdio: ["ignore", "ignore", "ignore"],
@@ -151,8 +168,10 @@ server.tool(
               dialog_dir: sessionDir,
               max_rounds: softCap,
               hard_cap: hardCap,
+              reasoning_effort: reasoning_effort || "codex default",
+              model: model || "default",
               message:
-                `Dialog started with a soft budget of ${softCap} rounds (hard cap ${hardCap}). Send your first message with send_message, then wait for Codex — arm a Monitor on ${sessionDir}/conversation.jsonl instead of sleep-polling check_messages.`,
+                `Dialog started with a soft budget of ${softCap} rounds (hard cap ${hardCap}), model: ${model || "default"}, reasoning effort: ${reasoning_effort || "codex default"}. Send your first message with send_message, then wait for Codex — arm a Monitor on ${sessionDir}/conversation.jsonl instead of sleep-polling check_messages.`,
             },
             null,
             2
@@ -205,8 +224,20 @@ server.tool(
       .describe(
         "Soft round budget (default: 5). Codex is asked to deliver all feedback within this many rounds. Hard cap = max_rounds + 5. Do not override unless the user explicitly requested a different budget."
       ),
+    reasoning_effort: z
+      .enum(["low", "medium", "high", "xhigh"])
+      .optional()
+      .describe(
+        "Codex reasoning effort level. Higher = deeper analysis but slower. When omitted, Codex uses its own configured default. Only override if the user explicitly requested a different effort level."
+      ),
+    model: z
+      .string()
+      .optional()
+      .describe(
+        "Codex model to use (e.g. 'gpt-5.4', 'gpt-5.3-codex', 'gpt-5.4-mini'). Omit to use Codex's default."
+      ),
   },
-  async ({ project_path, diff_target, branch, base_branch, review_focus, codex_command, max_rounds }) => {
+  async ({ project_path, diff_target, branch, base_branch, review_focus, codex_command, max_rounds, reasoning_effort, model }) => {
     const target = diff_target || "uncommitted";
     const softCap = max_rounds || 5;
     const hardCap = softCap + 5;
@@ -337,6 +368,8 @@ server.tool(
       review_focus: review_focus || null,
       max_rounds: softCap,
       hard_cap: hardCap,
+      reasoning_effort: reasoning_effort || null,
+      model: model || null,
       runner_pid: null,
     };
     fs.writeFileSync(
@@ -346,15 +379,18 @@ server.tool(
 
     // Spawn the review runner
     const runnerPath = new URL("review-runner.mjs", import.meta.url).pathname;
+    const reviewRunnerArgs = [
+      runnerPath,
+      sessionDir,
+      project_path,
+      codex_command || "codex",
+      String(softCap),
+      reasoning_effort || "",
+      model || "",
+    ];
     const runner = spawn(
       "node",
-      [
-        runnerPath,
-        sessionDir,
-        project_path,
-        codex_command || "codex",
-        String(softCap),
-      ],
+      reviewRunnerArgs,
       {
         detached: true,
         stdio: ["ignore", "ignore", "ignore"],
@@ -384,8 +420,10 @@ server.tool(
               diff_size: diff.length,
               max_rounds: softCap,
               hard_cap: hardCap,
+              reasoning_effort: reasoning_effort || "codex default",
+              model: model || "default",
               message:
-                `Code review started with a soft budget of ${softCap} rounds (hard cap ${hardCap}). Codex is generating an initial review — arm a Monitor on ${sessionDir}/conversation.jsonl to be notified when it lands, then call check_messages to read the content. Avoid sleep-polling.`,
+                `Code review started with a soft budget of ${softCap} rounds (hard cap ${hardCap}), model: ${model || "default"}, reasoning effort: ${reasoning_effort || "codex default"}. Codex is generating an initial review — arm a Monitor on ${sessionDir}/conversation.jsonl to be notified when it lands, then call check_messages to read the content. Avoid sleep-polling.`,
             },
             null,
             2

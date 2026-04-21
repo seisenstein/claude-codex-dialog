@@ -1,6 +1,6 @@
 ---
 description: Have Codex review an implementation plan via the codex-dialog MCP server
-argument-hint: [optional: path/to/plan.md] [optional: rounds:N]
+argument-hint: [optional: path/to/plan.md] [optional: rounds:N] [optional: effort:low|medium|high|xhigh] [optional: model:<id>]
 allowed-tools: mcp__codex-dialog__start_dialog, mcp__codex-dialog__check_messages, mcp__codex-dialog__send_message, mcp__codex-dialog__get_full_history, mcp__codex-dialog__check_partner_alive, mcp__codex-dialog__end_dialog, mcp__codex-dialog__list_sessions, Bash, Read, Glob, Grep, Edit, Write, AskUserQuestion, LSP, Monitor
 ---
 
@@ -30,7 +30,9 @@ Review plan: $ARGUMENTS
 
 Parse $ARGUMENTS:
 - Any argument of the form `rounds:N` (integer) → parse as `max_rounds`.
-- Remaining non-`rounds:*` argument (if any) → treat as the plan path.
+- Any argument of the form `effort:<level>` where level is one of `low`, `medium`, `high`, `xhigh` → parse as `reasoning_effort`. Otherwise DO NOT pass it — let Codex use its own configured default.
+- Any argument of the form `model:<id>` (e.g. `model:gpt-5.4`, `model:gpt-5.3-codex`) → parse as `model`. Otherwise DO NOT pass it — let Codex use its default.
+- Remaining non-`rounds:*`/non-`effort:*`/non-`model:*` argument (if any) → treat as the plan path.
 
 **If a plan path is provided**, use it directly.
 
@@ -60,6 +62,8 @@ Read the plan file contents. You'll include this in the dialog prompt.
 Call `start_dialog` with:
 - `project_path`: the git project root
 - `max_rounds`: only if the user provided `rounds:N`. Otherwise OMIT this parameter and let the server default to 5. **Never invent or change this value on your own** — the 5-round default is tuned to force Codex to deliver complete feedback each round rather than drip-feed it.
+- `reasoning_effort`: only if the user provided `effort:<level>`. Otherwise omit the parameter entirely and let Codex use its own configured default.
+- `model`: only if the user provided `model:<id>`. Otherwise omit the parameter entirely and let Codex use its default.
 - `problem_description`: a structured prompt — see below
 
 The `problem_description` must include the full plan content AND the adversarial review instructions:

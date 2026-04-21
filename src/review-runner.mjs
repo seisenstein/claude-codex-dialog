@@ -21,6 +21,9 @@ const projectPath = process.argv[3] || process.cwd();
 const codexCommand = process.argv[4] || "codex";
 const SOFT_CAP = parseInt(process.argv[5], 10) || 5;
 const HARD_CAP = SOFT_CAP + 5;
+const REASONING_EFFORT = process.argv[6] || null;
+const CODEX_MODEL = process.argv[7] || null;
+const VALID_EFFORTS = ["low", "medium", "high", "xhigh"];
 
 if (!sessionDir) {
   process.exit(1);
@@ -195,7 +198,16 @@ async function runCodex(prompt) {
 
     log(`Invoking ${codexCommand} for review (prompt: ${prompt.length} chars)`);
 
-    const codex = spawn(codexCommand, ["exec", "--full-auto", shortPrompt], {
+    const args = ["exec", "--full-auto"];
+    if (CODEX_MODEL) {
+      args.push("--model", CODEX_MODEL);
+    }
+    if (REASONING_EFFORT && VALID_EFFORTS.includes(REASONING_EFFORT)) {
+      args.push("-c", `model_reasoning_effort=${REASONING_EFFORT}`);
+    }
+    args.push(shortPrompt);
+
+    const codex = spawn(codexCommand, args, {
       cwd: projectPath,
       stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env },
@@ -277,6 +289,8 @@ async function main() {
   log(`Codex command: ${codexCommand}`);
   log(`Review focus: ${meta.review_focus || "general"}`);
   log(`Soft cap: ${SOFT_CAP} rounds, hard cap: ${HARD_CAP} rounds, Codex timeout: ${CODEX_TIMEOUT_MS / 1000}s, Idle timeout: ${MAX_IDLE_MS / 1000}s`);
+  log(`Model: ${CODEX_MODEL || "default"}`);
+  log(`Reasoning effort: ${REASONING_EFFORT || "codex default"}`);
 
   // ── Auto-start: generate initial review without waiting for Claude ──
   log("Generating initial review from diff...");

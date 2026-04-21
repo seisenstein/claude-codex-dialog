@@ -1,6 +1,6 @@
 ---
 description: Have Codex audit files or directories for bugs, architecture issues, and correctness
-argument-hint: <file or directory paths> [optional: focus area] [optional: rounds:N]
+argument-hint: <file or directory paths> [optional: focus area] [optional: rounds:N] [optional: effort:low|medium|high|xhigh] [optional: model:<id>]
 allowed-tools: mcp__codex-dialog__start_dialog, mcp__codex-dialog__check_messages, mcp__codex-dialog__send_message, mcp__codex-dialog__get_full_history, mcp__codex-dialog__check_partner_alive, mcp__codex-dialog__end_dialog, mcp__codex-dialog__list_sessions, Bash, Read, Glob, Grep, Edit, Write, AskUserQuestion, LSP, Monitor
 ---
 
@@ -37,8 +37,10 @@ echo "Project: $PROJECT_DIR"
 
 Parse $ARGUMENTS to determine:
 - **targets**: file paths, directory paths, or glob patterns to audit. Can be multiple, space-separated.
-- **focus**: if the last argument(s) look like a focus area rather than a path (e.g. "security", "error handling", "concurrency"), treat it as the review focus.
+- **focus**: after stripping any `rounds:*`, `effort:*`, and `model:*` tokens, if the last argument(s) look like a focus area rather than a path (e.g. "security", "error handling", "concurrency"), treat it as the review focus.
 - **max_rounds**: if any argument is `rounds:N` (integer), parse and pass it to `start_dialog` as `max_rounds`. Otherwise OMIT the parameter — the server will default to 5. **Never invent or adjust this value on your own.** The 5-round default is tuned to make Codex deliver complete feedback each round instead of drip-feeding. Only override when the user explicitly provided `rounds:N`.
+- **reasoning_effort**: if any argument matches `effort:<level>` where level is one of `low`, `medium`, `high`, `xhigh`, parse it and pass as `reasoning_effort`. Otherwise DO NOT pass it — let Codex use its own configured default.
+- **model**: if any argument matches `model:<id>` (e.g. `model:gpt-5.4`, `model:gpt-5.3-codex`), parse it and pass as `model`. Otherwise DO NOT pass it — let Codex use its default.
 
 Examples:
 - `src/` — audit all source files in src/
@@ -69,6 +71,8 @@ Note any files that were skipped so Codex knows what it hasn't seen.
 Call `start_dialog` with:
 - `project_path`: the git project root
 - `max_rounds`: only if the user provided `rounds:N`. Otherwise OMIT this parameter.
+- `reasoning_effort`: only if the user provided `effort:<level>`. Otherwise omit the parameter entirely and let Codex use its own configured default.
+- `model`: only if the user provided `model:<id>`. Otherwise omit the parameter entirely and let Codex use its default.
 - `problem_description`: A brief summary like: "Comprehensive code audit of [target files]. Codex will review for bugs, architecture issues, correctness, and potential problems."
 
 Save the returned `session_id`. Note the `max_rounds` and `hard_cap` values returned — you'll track budget via the `budget` field in subsequent tool responses.
