@@ -112,6 +112,7 @@ mkdir -p "$HOOKS_DIR"
 cp "$SCRIPT_DIR/src/hooks/mark-needs-investigation.mjs" "$HOOKS_DIR/"
 cp "$SCRIPT_DIR/src/hooks/clear-investigation.mjs" "$HOOKS_DIR/"
 cp "$SCRIPT_DIR/src/hooks/enforce-investigation.mjs" "$HOOKS_DIR/"
+cp "$SCRIPT_DIR/src/hooks/require-lgtm-or-cap.mjs" "$HOOKS_DIR/"
 
 # Remove old .sh hooks if present
 rm -f "$HOOKS_DIR/mark-needs-investigation.sh" "$HOOKS_DIR/clear-investigation.sh" "$HOOKS_DIR/enforce-investigation.sh"
@@ -139,6 +140,15 @@ node -e "
     };
     if (preIdx >= 0) preHooks[preIdx] = preEntry;
     else preHooks.push(preEntry);
+
+    // PreToolUse: block end_dialog unless LGTM or hard cap hit
+    const endIdx = preHooks.findIndex(h => h.matcher === 'mcp__codex-dialog__end_dialog');
+    const endEntry = {
+        matcher: 'mcp__codex-dialog__end_dialog',
+        hooks: [{ type: 'command', command: 'node ' + hooksDir + '/require-lgtm-or-cap.mjs' }]
+    };
+    if (endIdx >= 0) preHooks[endIdx] = endEntry;
+    else preHooks.push(endEntry);
 
     // PostToolUse: mark when codex findings arrive
     if (!config.hooks.PostToolUse) config.hooks.PostToolUse = [];
@@ -176,6 +186,7 @@ node -e "
     fs.writeFileSync(settingsPath, JSON.stringify(config, null, 2) + '\n');
 "
 echo "  enforce-investigation (PreToolUse on send_message) ✓"
+echo "  require-lgtm-or-cap (PreToolUse on end_dialog) ✓"
 echo "  mark-needs-investigation (PostToolUse on check_messages + get_full_history) ✓"
 echo "  clear-investigation (PostToolUse on Read only) ✓"
 

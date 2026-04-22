@@ -11,7 +11,7 @@ function resolveConvPath(sessionDir) {
 }
 
 function isValidMessage(obj) {
-  return obj && Number.isFinite(Number(obj.id)) && typeof obj.from === "string" && typeof obj.content === "string";
+  return obj && typeof obj.id === "number" && Number.isSafeInteger(obj.id) && obj.id > 0 && typeof obj.from === "string" && typeof obj.content === "string";
 }
 
 export function readConversation(sessionDir) {
@@ -36,6 +36,7 @@ export function readConversation(sessionDir) {
 
 function withConvLock(convPath, fn) {
   const lockPath = convPath + ".lock";
+  const STALE_MS = 30000;
   for (let i = 0; i < 200; i++) {
     try {
       fs.mkdirSync(lockPath);
@@ -46,11 +47,21 @@ function withConvLock(convPath, fn) {
       }
     } catch (e) {
       if (e.code !== "EEXIST") throw e;
+      // Check for stale lock (older than 30s = likely crashed holder)
+      if (i > 0 && i % 50 === 0) {
+        try {
+          const age = Date.now() - fs.statSync(lockPath).mtimeMs;
+          if (age > STALE_MS) {
+            try { fs.rmdirSync(lockPath); } catch {}
+            continue;
+          }
+        } catch {}
+      }
       const deadline = Date.now() + 10;
       while (Date.now() < deadline) {}
     }
   }
-  return fn();
+  throw new Error("Failed to acquire conversation lock after retries");
 }
 
 export function appendMessage(sessionDir, from, content) {
@@ -58,8 +69,8 @@ export function appendMessage(sessionDir, from, content) {
   return withConvLock(convPath, () => {
     const messages = readConversation(sessionDir);
     const maxId = messages.reduce((max, m) => {
-      const n = Number(m?.id);
-      return Number.isFinite(n) && n > max ? n : max;
+      const n = m?.id;
+      return typeof n === "number" && Number.isSafeInteger(n) && n > max ? n : max;
     }, 0);
     const id = maxId + 1;
     const msg = { id, from, content, timestamp: new Date().toISOString() };

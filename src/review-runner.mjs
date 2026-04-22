@@ -349,7 +349,7 @@ async function main() {
 
     if (newClaudeMessages.length > 0) {
       lastActivityTime = Date.now();
-      lastProcessedId = messages.reduce((max, m) => Math.max(max, m.id || 0), 0);
+      lastProcessedId = messages.reduce((max, m) => typeof m.id === "number" && Number.isSafeInteger(m.id) && m.id > max ? m.id : max, 0);
 
       log(
         `New Claude message(s) detected (latest id: ${lastProcessedId}). Starting review turn ${codexTurns + 1}...`
