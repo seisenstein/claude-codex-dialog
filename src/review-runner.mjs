@@ -356,7 +356,17 @@ async function main() {
       break;
     }
 
+    // Read messages and refreshed diff back-to-back to minimize snapshot mismatch.
+    // KNOWN RACE: a concurrent send_message can overwrite diff_refreshed.patch between
+    // these two reads, causing the prompt to pair messages M with diff D(M+1). The worst
+    // case is a slightly newer diff (more fixes visible), which is benign — not a
+    // correctness bug. Versioned per-message diffs were considered and rejected in favor
+    // of simplicity (no disk accumulation, no cleanup logic).
     const messages = readConversation(sessionDir);
+    let refreshedDiff = null;
+    if (fs.existsSync(REFRESHED_DIFF_PATH)) {
+      try { refreshedDiff = fs.readFileSync(REFRESHED_DIFF_PATH, "utf-8"); } catch {}
+    }
 
     const newClaudeMessages = messages.filter(
       (m) => m.id > lastProcessedId && m.from === "claude"
@@ -376,10 +386,6 @@ async function main() {
       } catch {}
 
       try {
-        let refreshedDiff = null;
-        if (fs.existsSync(REFRESHED_DIFF_PATH)) {
-          try { refreshedDiff = fs.readFileSync(REFRESHED_DIFF_PATH, "utf-8"); } catch {}
-        }
         const prompt = buildReviewPrompt(originalDiff, refreshedDiff, meta, messages, codexTurns);
         const response = await runCodex(prompt);
 

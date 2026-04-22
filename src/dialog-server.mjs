@@ -598,27 +598,41 @@ server.tool(
     if (!fs.existsSync(sessionDir)) {
       return { content: [{ type: "text", text: "Error: Session not found" }] };
     }
-    const msg = appendMsg(session_id, "claude", content);
     const status = readStat(session_id);
 
-    // Auto-refresh diff for review sessions so Codex sees mid-review fixes
+    // Auto-refresh diff BEFORE appending message so it's ready when the runner
+    // sees the new message and immediately starts building the prompt.
     if (status?.type === "review" && status.diff_target && !status.diff_target.startsWith("commit:")) {
       try {
         const refreshOpts = { cwd: status.project_path, timeout: 30000, maxBuffer: 10 * 1024 * 1024 };
+        const baseline = status.head_sha || "HEAD";
         let refreshedDiff;
         if (status.diff_target === "staged") {
           refreshedDiff = execSync("git diff --cached", refreshOpts).toString();
         } else if (status.diff_target === "branch") {
           const base = status.base_branch || "main";
           const head = status.branch;
-          refreshedDiff = execFileSync("git", ["diff", `${base}...${head}`], refreshOpts).toString();
+          try {
+            refreshedDiff = execFileSync("git", ["diff", `${base}...${head}`], refreshOpts).toString();
+          } catch {
+            refreshedDiff = execFileSync("git", ["diff", `${base}..${head}`], refreshOpts).toString();
+          }
         } else {
-          refreshedDiff = execSync("git diff HEAD", refreshOpts).toString();
+          // uncommitted: diff against the original HEAD SHA to keep baseline stable
+          try {
+            refreshedDiff = execFileSync("git", ["diff", baseline], refreshOpts).toString();
+          } catch {
+            refreshedDiff = execSync("git diff", refreshOpts).toString();
+          }
         }
         fs.writeFileSync(path.join(sessionDir, "diff_refreshed.patch"), refreshedDiff);
-      } catch {}
+      } catch {
+        // On failure, remove stale refreshed diff so runner falls back to original
+        try { fs.unlinkSync(path.join(sessionDir, "diff_refreshed.patch")); } catch {}
+      }
     }
 
+    const msg = appendMsg(session_id, "claude", content);
     const budget = computeBudget(status, readConv(session_id));
     return {
       content: [
