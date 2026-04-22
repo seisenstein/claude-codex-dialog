@@ -150,7 +150,7 @@ You can read any files in this directory to understand context beyond the diff.
     prompt += `\n`;
   }
 
-  const isInitialReview = conversationMessages.length === 0;
+  const isInitialReview = codexTurns === 0;
 
   const refFilesBlock = `
 ## File References (IMPORTANT)
@@ -349,7 +349,7 @@ async function main() {
 
     if (newClaudeMessages.length > 0) {
       lastActivityTime = Date.now();
-      lastProcessedId = messages[messages.length - 1].id;
+      lastProcessedId = messages.reduce((max, m) => Math.max(max, m.id || 0), 0);
 
       log(
         `New Claude message(s) detected (latest id: ${lastProcessedId}). Starting review turn ${codexTurns + 1}...`

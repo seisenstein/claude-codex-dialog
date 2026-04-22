@@ -16,7 +16,7 @@ try {
 }
 
 const sessionId = payload.tool_input?.session_id;
-if (!sessionId) process.exit(0);
+if (!sessionId || !/^[\w-]+$/.test(sessionId)) process.exit(0);
 
 const markerPath = path.join(os.tmpdir(), `codex-required-reads-${sessionId}`);
 if (!fs.existsSync(markerPath)) process.exit(0);

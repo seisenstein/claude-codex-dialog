@@ -3,7 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import fs from "fs";
 import path from "path";
-import { spawn, execSync } from "child_process";
+import { spawn, execSync, execFileSync } from "child_process";
 import crypto from "crypto";
 import {
   DIALOGS_DIR,
@@ -21,6 +21,9 @@ const server = new McpServer({
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function resolveSessionDir(sessionId) {
+  if (!/^(dialog|review)-\d+-[0-9a-f]+$/.test(sessionId)) {
+    throw new Error(`Invalid session ID format: ${sessionId}`);
+  }
   return path.join(DIALOGS_DIR, sessionId);
 }
 
@@ -64,19 +67,19 @@ function extractReferencedFiles(messages, projectPath) {
     const refMatch = content.match(/^REFERENCED_FILES:\s*(.+)$/m);
     if (refMatch) {
       for (const entry of refMatch[1].split(/,\s*/)) {
-        const p = entry.trim().replace(/:\d+$/, "");
+        const p = entry.trim().replace(/:\d+(?::\d+)?$/, "");
         if (p) raw.add(p);
       }
     }
     // Fallback: markdown links [text](/path/to/file) or [text](/path/to/file:line)
     for (const m of content.matchAll(/\[([^\]]*)\]\(([^)]+)\)/g)) {
-      let p = m[2].replace(/#.*$/, "").replace(/:\d+$/, "");
+      let p = m[2].replace(/#.*$/, "").replace(/:\d+(?::\d+)?$/, "");
       if (p.includes("/") && !p.startsWith("http")) raw.add(p);
     }
     // Fallback: backtick paths — with or without directory separators.
     // Permissive match; filesystem validation filters false positives.
     for (const m of content.matchAll(/`([^`\s]+\.[a-zA-Z]{1,5}(?::\d+)?)`/g)) {
-      let p = m[1].replace(/:\d+$/, "");
+      let p = m[1].replace(/:\d+(?::\d+)?$/, "");
       raw.add(p);
     }
   }
@@ -198,6 +201,7 @@ server.tool(
         env: { ...process.env },
       }
     );
+    runner.on("error", () => {});
     runner.unref();
 
     // Update status with PID
@@ -289,6 +293,11 @@ server.tool(
   },
   async ({ project_path, diff_target, branch, base_branch, review_focus, codex_command, max_rounds, reasoning_effort, model }) => {
     const target = diff_target || "uncommitted";
+    if (!["staged", "uncommitted", "branch"].includes(target) && !target.startsWith("commit:")) {
+      return {
+        content: [{ type: "text", text: `Error: Unknown diff_target "${target}". Use: staged, uncommitted, branch, or commit:<sha>` }],
+      };
+    }
     const softCap = max_rounds || 5;
     const hardCap = softCap + 5;
     const execOpts = { cwd: project_path, timeout: 30000, maxBuffer: 10 * 1024 * 1024 };
@@ -335,8 +344,11 @@ server.tool(
         }
       } else if (target.startsWith("commit:")) {
         const sha = target.slice("commit:".length);
-        diff = execSync(`git show ${sha} --format=`, execOpts).toString();
-        diffStat = execSync(`git show ${sha} --stat --format=`, { ...execOpts, timeout: 10000 }).toString();
+        if (!/^[0-9a-fA-F]{4,40}$/.test(sha)) {
+          throw new Error(`Invalid commit SHA: ${sha}`);
+        }
+        diff = execFileSync("git", ["show", sha, "--format="], execOpts).toString();
+        diffStat = execFileSync("git", ["show", sha, "--stat", "--format="], { ...execOpts, timeout: 10000 }).toString();
         diffLabel = `commit ${sha}`;
       } else {
         // Branch mode
@@ -344,12 +356,12 @@ server.tool(
         const headBranch = branch || currentBranch;
 
         try {
-          diff = execSync(`git diff ${baseBranch}...${headBranch}`, execOpts).toString();
-          diffStat = execSync(`git diff --stat ${baseBranch}...${headBranch}`, { ...execOpts, timeout: 10000 }).toString();
+          diff = execFileSync("git", ["diff", `${baseBranch}...${headBranch}`], execOpts).toString();
+          diffStat = execFileSync("git", ["diff", "--stat", `${baseBranch}...${headBranch}`], { ...execOpts, timeout: 10000 }).toString();
         } catch {
           // Fall back to two-dot diff
-          diff = execSync(`git diff ${baseBranch}..${headBranch}`, execOpts).toString();
-          diffStat = execSync(`git diff --stat ${baseBranch}..${headBranch}`, { ...execOpts, timeout: 10000 }).toString();
+          diff = execFileSync("git", ["diff", `${baseBranch}..${headBranch}`], execOpts).toString();
+          diffStat = execFileSync("git", ["diff", "--stat", `${baseBranch}..${headBranch}`], { ...execOpts, timeout: 10000 }).toString();
         }
         diffLabel = `${headBranch} vs ${baseBranch}`;
       }
@@ -383,9 +395,11 @@ server.tool(
     // Write review artifacts
     fs.writeFileSync(path.join(sessionDir, "diff.patch"), diff);
 
+    const headBranchForMeta = target === "branch" ? (branch || currentBranch) : currentBranch;
+    const baseBranchForMeta = target === "branch" ? (base_branch || "main") : "HEAD";
     const meta = {
-      branch: currentBranch,
-      base_branch: base_branch || "HEAD",
+      branch: headBranchForMeta,
+      base_branch: baseBranchForMeta,
       diff_target: target,
       diff_label: diffLabel,
       diff_stat: diffStat.trim(),
@@ -414,7 +428,8 @@ server.tool(
       codex_command: codex_command || "codex",
       diff_target: target,
       diff_label: diffLabel,
-      branch: currentBranch,
+      branch: headBranchForMeta,
+      base_branch: baseBranchForMeta,
       review_focus: review_focus || null,
       max_rounds: softCap,
       hard_cap: hardCap,
@@ -447,6 +462,7 @@ server.tool(
         env: { ...process.env },
       }
     );
+    runner.on("error", () => {});
     runner.unref();
 
     status.runner_pid = runner.pid;
@@ -498,11 +514,11 @@ server.tool(
 
     const messages = readConv(session_id);
 
-    // Read review metadata if it exists
     const metaPath = path.join(sessionDir, "review_meta.json");
-    const meta = fs.existsSync(metaPath)
-      ? JSON.parse(fs.readFileSync(metaPath, "utf-8"))
-      : null;
+    let meta = null;
+    if (fs.existsSync(metaPath)) {
+      try { meta = JSON.parse(fs.readFileSync(metaPath, "utf-8")); } catch {}
+    }
 
     // Parse structured findings from codex messages. Keep in sync with the
     // taxonomy advertised in runner prompts and skill docs.
@@ -686,9 +702,10 @@ server.tool(
     const problem = fs.existsSync(problemPath)
       ? fs.readFileSync(problemPath, "utf-8")
       : null;
-    const meta = fs.existsSync(metaPath)
-      ? JSON.parse(fs.readFileSync(metaPath, "utf-8"))
-      : null;
+    let meta = null;
+    if (fs.existsSync(metaPath)) {
+      try { meta = JSON.parse(fs.readFileSync(metaPath, "utf-8")); } catch {}
+    }
 
     return {
       content: [
@@ -828,23 +845,28 @@ server.tool(
     const sessions = fs
       .readdirSync(DIALOGS_DIR)
       .filter((d) => d.startsWith("dialog-") || d.startsWith("review-"));
-    const results = sessions.map((sessionId) => {
-      const status = readStat(sessionId);
-      const messages = readConv(sessionId);
-      const alive = status?.runner_pid
-        ? isProcessAlive(status.runner_pid)
-        : false;
-      const budget = computeBudget(status, messages);
-      return {
-        session_id: sessionId,
-        type: sessionId.startsWith("review-") ? "review" : "dialog",
-        started_at: status?.started_at,
-        message_count: messages.length,
-        runner_alive: alive,
-        budget,
-        ...(status?.branch ? { branch: status.branch, base_branch: status.base_branch } : {}),
-      };
-    });
+    const results = [];
+    for (const sessionId of sessions) {
+      try {
+        const status = readStat(sessionId);
+        const messages = readConv(sessionId);
+        const alive = status?.runner_pid
+          ? isProcessAlive(status.runner_pid)
+          : false;
+        const budget = computeBudget(status, messages);
+        results.push({
+          session_id: sessionId,
+          type: sessionId.startsWith("review-") ? "review" : "dialog",
+          started_at: status?.started_at,
+          message_count: messages.length,
+          runner_alive: alive,
+          budget,
+          ...(status?.branch ? { branch: status.branch, base_branch: status.base_branch } : {}),
+        });
+      } catch {
+        results.push({ session_id: sessionId, error: "failed to read session" });
+      }
+    }
 
     return {
       content: [{ type: "text", text: JSON.stringify(results, null, 2) }],

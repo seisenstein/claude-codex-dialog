@@ -46,7 +46,7 @@ const hasTaggedFindings = msgs.some(
 if (referencedFiles.length === 0 && !hasTaggedFindings) process.exit(0);
 
 const sessionId = payload.tool_input?.session_id;
-if (!sessionId) process.exit(0);
+if (!sessionId || !/^[\w-]+$/.test(sessionId)) process.exit(0);
 
 const marker = path.join(os.tmpdir(), `codex-required-reads-${sessionId}`);
 

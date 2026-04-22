@@ -276,7 +276,7 @@ async function main() {
     if (newClaudeMessages.length > 0) {
       // Update tracking
       lastClaudeMessageTime = Date.now();
-      lastProcessedId = messages[messages.length - 1].id;
+      lastProcessedId = messages.reduce((max, m) => Math.max(max, m.id || 0), 0);
 
       log(
         `New Claude message(s) detected (latest id: ${lastProcessedId}). Starting codex turn ${codexTurns + 1}...`
