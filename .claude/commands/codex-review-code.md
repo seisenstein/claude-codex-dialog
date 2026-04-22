@@ -1,6 +1,6 @@
 ---
 description: Have Codex review your code changes via the codex-dialog MCP server
-argument-hint: [optional: diff_target (uncommitted|staged|branch|commit:<sha>)] [optional: review focus] [optional: rounds:N] [optional: effort:low|medium|high|xhigh] [optional: model:<id>]
+argument-hint: [optional: diff_target (uncommitted|staged|branch|commit:<sha>)] [optional: review focus] [optional: rounds:N] [optional: effort:low|medium|high|xhigh] [optional: model:gpt-5.4|gpt-5.3-codex|gpt-5.4-mini|gpt-5.3-codex-spark]
 allowed-tools: mcp__codex-dialog__start_code_review, mcp__codex-dialog__check_messages, mcp__codex-dialog__send_message, mcp__codex-dialog__get_review_summary, mcp__codex-dialog__get_full_history, mcp__codex-dialog__check_partner_alive, mcp__codex-dialog__end_dialog, mcp__codex-dialog__list_sessions, Bash, Read, Glob, Grep, Edit, Write, AskUserQuestion, LSP, Monitor
 ---
 
@@ -38,7 +38,7 @@ Parse $ARGUMENTS to determine:
 - **review_focus**: remaining text after diff_target (excluding any `rounds:N`, `effort:*`, or `model:*` tokens), if any (e.g. "security", "performance", "correctness")
 - **max_rounds**: if any argument matches `rounds:N` (integer), parse it and pass as `max_rounds`. Otherwise DO NOT pass `max_rounds` — let the server use its tuned default of 5. **Never invent or adjust this value on your own.** The default exists for a reason: it forces Codex to deliver complete feedback each round instead of drip-feeding. Only override when the user explicitly provided `rounds:N` in the command.
 - **reasoning_effort**: if any argument matches `effort:<level>` where level is one of `low`, `medium`, `high`, `xhigh`, parse it and pass as `reasoning_effort`. Otherwise DO NOT pass it — let Codex use its own configured default. Only override when the user explicitly provided `effort:<level>` in the command.
-- **model**: if any argument matches `model:<id>` (e.g. `model:gpt-5.4`, `model:gpt-5.3-codex`, `model:gpt-5.4-mini`), parse it and pass as `model`. Otherwise DO NOT pass it — let Codex use its default model. Only override when the user explicitly provided `model:<id>` in the command.
+- **model**: if any argument matches `model:<name>` where name is one of `gpt-5.4`, `gpt-5.3-codex`, `gpt-5.4-mini`, `gpt-5.3-codex-spark`, parse it and pass as `model`. These are the ONLY valid model IDs — do not guess or abbreviate (e.g. `gpt-5.3` is NOT valid, use `gpt-5.3-codex`). Otherwise DO NOT pass it — let Codex use its default model.
 
 If $ARGUMENTS is empty, use `uncommitted` as the diff target with no specific focus.
 

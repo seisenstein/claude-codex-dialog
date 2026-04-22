@@ -143,10 +143,10 @@ server.tool(
         "Codex reasoning effort level. Higher = deeper analysis but slower. When omitted, Codex uses its own configured default. Only override if the user explicitly requested a different effort level."
       ),
     model: z
-      .string()
+      .enum(["gpt-5.4", "gpt-5.3-codex", "gpt-5.4-mini", "gpt-5.3-codex-spark"])
       .optional()
       .describe(
-        "Codex model to use (e.g. 'gpt-5.4', 'gpt-5.3-codex', 'gpt-5.4-mini'). Omit to use Codex's default."
+        "Codex model to use. Omit to use Codex's default."
       ),
   },
   async ({ problem_description, project_path, codex_command, max_rounds, reasoning_effort, model }) => {
@@ -285,10 +285,10 @@ server.tool(
         "Codex reasoning effort level. Higher = deeper analysis but slower. When omitted, Codex uses its own configured default. Only override if the user explicitly requested a different effort level."
       ),
     model: z
-      .string()
+      .enum(["gpt-5.4", "gpt-5.3-codex", "gpt-5.4-mini", "gpt-5.3-codex-spark"])
       .optional()
       .describe(
-        "Codex model to use (e.g. 'gpt-5.4', 'gpt-5.3-codex', 'gpt-5.4-mini'). Omit to use Codex's default."
+        "Codex model to use. Omit to use Codex's default."
       ),
   },
   async ({ project_path, diff_target, branch, base_branch, review_focus, codex_command, max_rounds, reasoning_effort, model }) => {
